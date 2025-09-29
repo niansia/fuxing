@@ -1,0 +1,1262 @@
+<!DOCTYPE html> 
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>花蓮光復鄉互助網</title>
+
+  <!-- React / Babel / Tailwind -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Leaflet & toGeoJSON (KML 轉 GeoJSON) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/togeojson@0.16.0/dist/togeojson.umd.js"></script>
+
+  <!-- PapaParse for CSV parsing -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='8' fill='%23ef4444'/%3E%3C/svg%3E" />
+  <style>
+    html,body,#root{height:100%}
+    .animate-marquee{display:inline-block;min-width:100%;animation:marquee 30s linear infinite}
+    @keyframes marquee{0%{transform:translateX(100%)}100%{transform:translateX(-100%)}}
+    .leaflet-container{background:#f8fafc; z-index:1}
+    .ui-over{position:relative; z-index:10}
+    .modal-z{z-index:50}
+    .leaflet-popup{z-index:60}
+  </style>
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+  const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+  /* ---------------- 常數 / 公用 ---------------- */
+  const RequestType = { VOLUNTEER: '志工人力', SUPPLY: '物資需求' };
+  const RequestStatus = { NEW:'新登記', IN_PROGRESS:'處理中', COMPLETED:'已完成' };
+  const uuid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+  const CENTER = { lat: 23.6697, lon: 121.4235 };
+  const WAQI_TOKEN = 'demo';
+  const MYMAPS_MID = '1qOHK91tv68NacIN1GVTDYKn10ojb-t8';
+  const KML_URL = `https://www.google.com/maps/d/kml?mid=${MYMAPS_MID}&forcekml=1`;
+  const KML_FALLBACK = `https://www.google.com/maps/d/kml?mid=${MYMAPS_MID}&forcekml=1`;
+  const SHOVEL_JSON = 'https://shovel-heroes.com/Map/data.json';
+  const GOV_POINTS_URL = 'https://tainan.olc.tw/p/guangfu250923/data/government_points.json';
+  const WRA_LEVEL_API = '/api/proxy/wra/realtime-water-level';
+  const GEO_CACHE_KEY = 'gf_geo_cache_v4';
+  const GEO_FAIL_KEY  = 'gf_geo_fail_v1';
+
+  // 外部資源連結
+  const EXTERNAL_LINKS = [
+    { name:'光復災情整合網', url:'https://sites.google.com/view/guangfu250923/home?authuser=0' },
+    { name:'救災列表地圖',   url:'https://tainan.olc.tw/p/guangfu250923/#db7bcdce-b986-4128-a9ab-98d1f6b14b36' },
+    { name:'洗澡點',         url:'https://sites.google.com/view/guangfu250923/%E7%8F%BE%E5%A0%B4%E4%BA%BA%E5%93%A1%E6%AC%B2%E6%8F%90%E4%BE%9B%E8%B3%87%E6%BA%90/shower_locations?authuser=0' },
+    { name:'住宿點',         url:'https://sites.google.com/view/guangfu250923/%E7%8F%BE%E5%A0%B4%E4%BA%BA%E5%93%A1%E6%AC%B2%E6%8F%90%E4%BE%9B%E8%B3%87%E6%BA%90/hotel?authuser=0' },
+  ];
+
+  // 手動庇護所（以地址定位）
+  const SHELTER_PRESETS = [
+    { name:'光復國小', address:'花蓮縣光復鄉中山路三段75號' },
+    { name:'東豐部落', address:'花蓮縣光復鄉東富路5號' },
+    { name:'阿陶莫部落', address:'花蓮縣光復鄉東富路19號' },
+    { name:'大進國小收容中心安心站', address:'花蓮縣光復鄉糖廠街4號' },
+    { name:'花蓮同鄉公益總會', address:'花蓮縣吉安鄉和平路一段55號' },
+    { name:'瑞穗虎爺溫泉', address:'花蓮縣瑞穗鄉祥北路二段101-5號' },
+    { name:'馬太鞍長老教會', address:'花蓮縣光復鄉大馬村中山路三段89巷14號' },
+    { name:'花蓮縣光復鄉東富村', address:'花蓮縣光復鄉富田三街21號' },
+    { name:'光復鄉災害應變中心', address:'花蓮縣光復鄉大進村糖廠街19號' },
+    { name:'花蓮糖廠中央倉庫', address:'花蓮縣光復鄉糖廠街19號' },
+    { name:'花蓮光復鄉天主堂', address:'花蓮縣光復鄉富田一街16號' },
+    { name:'太巴塱教會支援中心站', address:'花蓮縣光復鄉中正路二段90號' },
+    { name:'瑞穗生命園區', address:'花蓮縣瑞穗鄉仁愛路234號' },
+    { name:'大安活動中心', address:'花蓮縣光復鄉忠孝路23巷11號1樓' }
+  ];
+
+  // CSV資料集
+  const DATASETS = [
+    {key:'baths',    label:'洗澡點',   color:'#0ea5e9', csv:'Data/光復志工洗澡點.csv', icon:'🚿'},
+    {key:'shelters', label:'庇護所',   color:'#10b981', csv:'Data/庇護所資訊.csv',     icon:'🏛️'},
+    {key:'lodging',  label:'住宿',     color:'#f59e0b', csv:'Data/優待住宿點.csv',     icon:'🛏️'},
+    {key:'medical',  label:'醫療',     color:'#ef4444', csv:'Data/醫療站列表.csv',     icon:'🩺'},
+    {key:'mental',   label:'心理',     color:'#8b5cf6', csv:'Data/心理健康資源.csv',   icon:'💚'}
+  ];
+
+  const LS_USER_ADDS  = 'gf_user_adds_v1';
+
+  // CSV欄位工具
+  const tryPick = (row, names) => {
+    for (const n of names) {
+      const hit = Object.keys(row).find(k => k.trim().toLowerCase() === n.toLowerCase());
+      if (hit && String(row[hit]).trim()!=='') return row[hit];
+    }
+    for (const k of Object.keys(row)) {
+      const kk = k.trim();
+      if (names.some(n => kk.includes(n))) {
+        const v = row[k];
+        if (v!=null && String(v).trim()!=='') return v;
+      }
+    }
+    return '';
+  };
+  const toNumber = (v)=> {
+    const n = Number(String(v).replace(/[^\d\.\-]/g,''));
+    return isFinite(n) ? n : NaN;
+  };
+  const detectLatLng = (row) => {
+    const lat = tryPick(row, ['lat','latitude','緯度']);
+    const lng = tryPick(row, ['lng','lon','long','longitude','經度']);
+    return {lat: toNumber(lat), lng: toNumber(lng)};
+  };
+
+  async function parseJSONResponse(res, fallbackMessage) {
+    const text = await res.text();
+    if (!res.ok) {
+      let message = fallbackMessage;
+      try {
+        const data = text ? JSON.parse(text) : null;
+        if (data?.error) message = data.error;
+      } catch {}
+      throw new Error(message);
+    }
+    return text ? JSON.parse(text) : null;
+  }
+
+  // ---- 地理編碼（只用地址） ----
+  function normalizeAddress(addr) {
+    let a = (addr || '').trim();
+    if (!a) return '';
+    a = a.replace(/正對面|對面|附近|約\d+分鐘.+車程|開放時間.+|僅開放.+/g, '');
+    a = a.replace(/[()（）]/g, ' ');
+    a = a.replace(/\s+/g, ' ').trim();
+    const hualienTowns = ['光復鄉','吉安鄉','鳳林鎮','瑞穗鄉','萬榮鄉','新城鄉','玉里鎮','富里鄉','豐濱鄉','壽豐鄉','花蓮市'];
+    if (hualienTowns.some(t => a.includes(t)) && !a.includes('花蓮縣') && !a.includes('花蓮市')) {
+      a = '花蓮縣 ' + a;
+    }
+    if (a.includes('光復車站')) a = '光復車站 花蓮縣光復鄉';
+    if (!/台灣|臺灣|Taiwan/i.test(a)) a = a + ' 台灣';
+    return a;
+  }
+  const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
+  function isInTaiwanBox(lat, lng) { return isFinite(lat) && isFinite(lng) && lat>=21.5 && lat<=25.5 && lng>=119 && lng<=123.6; }
+
+  async function geocodeNominatim(q) {
+    const url = new URL('https://nominatim.openstreetmap.org/search');
+    url.searchParams.set('format','json'); url.searchParams.set('q', q);
+    url.searchParams.set('limit','1'); url.searchParams.set('countrycodes','tw');
+    url.searchParams.set('viewbox', `${120.9},${24.9},${122.3},${22.8}`);
+    url.searchParams.set('bounded','1');
+    try {
+      const r = await fetch(url.toString(), { headers: { 'Accept':'application/json' } });
+      if (r.ok) {
+        const arr = await r.json();
+        if (Array.isArray(arr) && arr.length) {
+          const lat = Number(arr[0].lat), lng = Number(arr[0].lon);
+          if (isInTaiwanBox(lat,lng)) return {lat,lng, src:'nominatim'};
+        }
+      }
+    } catch {}
+    return null;
+  }
+  async function geocodeMapsCo(q) {
+    try {
+      const r = await fetch('https://geocode.maps.co/search?q=' + encodeURIComponent(q));
+      if (r.ok) {
+        const arr = await r.json();
+        if (Array.isArray(arr) && arr.length) {
+          const lat = Number(arr[0].lat), lng = Number(arr[0].lon);
+          if (isInTaiwanBox(lat,lng)) return {lat,lng, src:'maps.co'};
+        }
+      }
+    } catch {}
+    return null;
+  }
+  async function geocodePhoton(q) {
+    try {
+      const r = await fetch('https://photon.komoot.io/api/?q=' + encodeURIComponent(q) + '&lang=zh');
+      if (r.ok) {
+        const j = await r.json();
+        const f = j?.features?.[0];
+        if (f?.geometry?.coordinates?.length===2) {
+          const [lng,lat] = f.geometry.coordinates;
+          if (isInTaiwanBox(lat,lng)) return {lat, lng, src:'photon'};
+        }
+      }
+    } catch {}
+    return null;
+  }
+
+  async function geocodeAddress(address) {
+    const addr = normalizeAddress(address);
+    if (!addr) return null;
+    const cache = JSON.parse(localStorage.getItem(GEO_CACHE_KEY) || '{}');
+    if (cache[addr]) return cache[addr];
+    const failed = JSON.parse(localStorage.getItem(GEO_FAIL_KEY) || '[]');
+    if (failed.includes(addr)) return null;
+
+    const tries = [geocodeNominatim, geocodeMapsCo, geocodePhoton];
+    let res = null;
+    for (const fn of tries) {
+      res = await fn(addr);
+      if (res) break;
+      await sleep(400);
+    }
+    if (res) {
+      cache[addr] = { lat: res.lat, lng: res.lng };
+      localStorage.setItem(GEO_CACHE_KEY, JSON.stringify(cache));
+      return cache[addr];
+    } else {
+      failed.push(addr);
+      localStorage.setItem(GEO_FAIL_KEY, JSON.stringify(failed.slice(-200)));
+    }
+    return null;
+  }
+
+  /* ---------------- 標頭 ---------------- */
+  const Header = () => (
+    <header className="bg-white shadow-md ui-over">
+      <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-3xl font-bold text-slate-800">花蓮光復鄉 災情互助平台</h1>
+          <div className="hidden md:flex items-center gap-2">
+            {EXTERNAL_LINKS.map(l=>(
+              <a key={l.url} href={l.url} target="_blank" rel="noopener" className="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700">{l.name}</a>
+            ))}
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+
+  /* ---------------- 跑馬燈 ---------------- */
+  const EmergencyTicker = () => {
+    const [items, setItems] = useState([]);
+    useEffect(() => {
+      const load = async () => {
+        const list = [];
+        try {
+          const url = new URL('https://api.open-meteo.com/v1/forecast');
+          url.searchParams.set('latitude', CENTER.lat);
+          url.searchParams.set('longitude', CENTER.lon);
+          url.searchParams.set('hourly','temperature_2m,wind_speed_10m,precipitation');
+          url.searchParams.set('timezone','Asia/Taipei');
+          const w = await fetch(url).then(r=>r.json());
+          const last = w.hourly.time.length - 1;
+          list.push({source:'氣溫', title:`${Math.round(w.hourly.temperature_2m[last])}°C`});
+          list.push({source:'風速', title:`${Math.round(w.hourly.wind_speed_10m[last])} km/h`});
+          list.push({source:'時雨量', title:`${(w.hourly.precipitation[last]||0).toFixed(1)} mm`});
+        } catch {}
+        try {
+          const aqiUrl = `https://api.waqi.info/feed/geo:${CENTER.lat};${CENTER.lon}/?token=${WAQI_TOKEN}`;
+          const aqi = await fetch(aqiUrl).then(r=>r.json());
+          if (aqi?.status === 'ok') list.push({source:'AQI', title:String(aqi.data.aqi)});
+        } catch {}
+        setItems(list);
+      };
+      load();
+      const t = setInterval(load, 60000);
+      return ()=>clearInterval(t);
+    }, []);
+    const text = items.slice(0, 12).map(i => `【${i.source}】${i.title}`).join(' ｜ ');
+    return (
+      <div className="bg-red-600 text-white text-sm py-2 overflow-hidden">
+        <div className="animate-marquee whitespace-nowrap px-4">{text || '資料載入中…'}</div>
+      </div>
+    );
+  };
+
+  /* ---------------- 氣象 / 水位 ---------------- */
+  const WeatherAlert = () => {
+    const [data, setData] = useState(null);
+    const load = async () => {
+      try {
+        const url = new URL('https://api.open-meteo.com/v1/forecast');
+        url.searchParams.set('latitude', CENTER.lat);
+        url.searchParams.set('longitude', CENTER.lon);
+        url.searchParams.set('hourly','temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation');
+        url.searchParams.set('timezone','Asia/Taipei');
+        const w = await fetch(url).then(r=>r.json());
+        const last = w.hourly.time.length - 1;
+
+        let rain24h = 0;
+        if (w.hourly?.precipitation?.length) {
+          rain24h = w.hourly.precipitation.slice(Math.max(0,last-23), last+1).reduce((s,v)=>s+(Number(v)||0),0);
+          rain24h = Math.round(rain24h*10)/10;
+        }
+
+        let aqi = null;
+        try {
+          const aqiUrl = `https://api.waqi.info/feed/geo:${CENTER.lat};${CENTER.lon}/?token=${WAQI_TOKEN}`;
+          const a = await fetch(aqiUrl).then(r=>r.json());
+          if (a?.status==='ok') aqi = a.data.aqi;
+        } catch {}
+
+        let riverLevel = null, riverStatus = 'normal', riverStation = '';
+        try {
+          const r = await fetch(WRA_LEVEL_API);
+          if (r.ok) {
+            const arr = await r.json();
+            const hl = (Array.isArray(arr) ? arr : []).filter(s => String(s?.County||'').includes('花蓮'));
+            let best=null, bestd=1e9;
+            for(const s of hl){
+              const dlat = (s.StationLatitude||s.Latitude||0) - CENTER.lat;
+              const dlng = (s.StationLongitude||s.Longitude||0) - CENTER.lon;
+              const d = Math.hypot(dlat, dlng);
+              if (d<bestd){best=s; bestd=d;}
+            }
+            const target = best || null;
+            if (target?.WaterLevel) {
+              riverLevel = Number(target.WaterLevel);
+              riverStation = target.StationName || target.SiteName || '';
+              riverStatus = riverLevel > 4 ? 'warning' : riverLevel > 3 ? 'watch' : 'normal';
+            }
+          }
+        } catch {}
+
+        setData({
+          rainfall24h: rain24h,
+          rainfallHourly: Math.round((w.hourly.precipitation[last]||0)*10)/10,
+          windSpeed: Math.round(w.hourly.wind_speed_10m[last]||0),
+          temperature: Math.round(w.hourly.temperature_2m[last]||0),
+          humidity: Math.round(w.hourly.relative_humidity_2m[last]||0),
+          airQuality: aqi ?? '—',
+          riverLevel, riverStatus, riverStation,
+          lastUpdate: new Date().toISOString(),
+          dataSource: 'Open-Meteo / WAQI / WRA'
+        });
+      } catch (e) { console.error(e); }
+    };
+    useEffect(()=>{ load(); const t=setInterval(load,60000); return ()=>clearInterval(t)},[]);
+    if (!data) return null;
+
+    const color =
+      data.riverStatus==='warning' ? 'bg-red-50 border-red-200 text-red-800' :
+      data.riverStatus==='watch'   ? 'bg-yellow-50 border-yellow-200 text-yellow-800' :
+                                     'bg-green-50 border-green-200 text-green-800';
+
+    const statusText =
+      data.riverStatus==='warning' ? '🚨 溪水暴漲警報' :
+      data.riverStatus==='watch'   ? '⚠️ 溪水上漲注意' : '✅ 溪水狀況正常';
+
+    const Box = ({label, val, sub}) => (
+      <div className="bg-white rounded-lg p-3 text-center">
+        <div className="text-xs text-gray-600 mb-1">{label}</div>
+        <div className="text-xl font-bold">{val}</div>
+        {sub ? <div className="text-xs text-gray-500">{sub}</div> : null}
+      </div>
+    );
+
+    return (
+      <div className={`rounded-lg p-4 mb-6 ${color} ui-over`}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-bold">🌧️ 即時氣象 / 空氣 / 水位</h3>
+          <span className="text-sm font-medium">{statusText}</span>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+          <Box label="時雨量" val={`${data.rainfallHourly} mm`} />
+          <Box label="24h 累積" val={`${data.rainfall24h} mm`} />
+          <Box label={`溪水水位${data.riverStation?`（${data.riverStation}）`:''}`} val={data.riverLevel!=null?`${data.riverLevel.toFixed(2)} m`:'—'} sub="水利署 / 約10分鐘" />
+          <Box label="AQI" val={data.airQuality} />
+          <Box label="溫度" val={`${data.temperature}°C`} />
+          <Box label="濕度" val={`${data.humidity}%`} />
+        </div>
+        <div className="mt-3 flex justify-between items-center text-xs opacity-75">
+          <span>最後更新：{new Date(data.lastUpdate).toLocaleString('zh-TW')}</span>
+          <span>資料來源：{data.dataSource}</span>
+        </div>
+      </div>
+    );
+  };
+
+  /* ---------------- 官方 My Maps 彈窗 ---------------- */
+  const DisasterMap = ({ isOpen, onClose }) => {
+    if (!isOpen) return null;
+    return (
+      <div className="fixed inset-0 bg-black/50 modal-z flex items-center justify-center p-4">
+        <div className="bg-white rounded-lg w-full max-w-6xl h-5/6 relative">
+          <div className="flex items-center justify-between p-4 border-b">
+            <h3 className="text-lg font-bold">光復鄉災情整合地圖（官方 My Maps）</h3>
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-xl">✕</button>
+          </div>
+          <div className="h-full p-4">
+            <iframe
+              src={`https://www.google.com/maps/d/embed?mid=${MYMAPS_MID}&ehbc=2E312F`}
+              width="100%" height="90%" style={{ border: 0 }}
+              allowFullScreen loading="lazy"></iframe>
+            <div className="mt-2 text-xs text-gray-500 text-center">包含交通管制、物資、醫療、供水…等圖層</div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  /* ---------------- 地圖主面板 ---------------- */
+  const LeafletMapPanel = ({requests}) => {
+    const mapRef = useRef(null);
+    const layerRef = useRef({
+      kml:null, user:null, req:null, shovel:null, gov:null, manualShelters:null,
+      csv:{ baths:null, shelters:null, lodging:null, medical:null, mental:null }
+    });
+    const [list, setList] = useState([]);
+    const [filterKey, setFilterKey] = useState('全部');
+    const [search, setSearch] = useState('');
+    const [showOfficial, setShowOfficial] = useState(false);
+    const [csvVisible, setCsvVisible] = useState({ baths:true, shelters:true, lodging:true, medical:true, mental:true });
+    const [showAddForm, setShowAddForm] = useState(false);
+    const lastGeoRef = useRef(0); // geocode 節流
+
+    // 初始地圖
+    useEffect(() => {
+      const m = L.map('gf-map', { center:[CENTER.lat, CENTER.lon], zoom:12 });
+      mapRef.current = m;
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, attribution: '&copy; OpenStreetMap'
+      }).addTo(m);
+
+      // Layer groups
+      layerRef.current.kml     = L.layerGroup().addTo(m);
+      layerRef.current.user    = L.layerGroup().addTo(m);
+      layerRef.current.req     = L.layerGroup().addTo(m);
+      layerRef.current.shovel  = L.layerGroup().addTo(m);
+      layerRef.current.gov     = L.layerGroup().addTo(m);
+      layerRef.current.manualShelters = L.layerGroup().addTo(m);
+      layerRef.current.csv.baths    = L.layerGroup().addTo(m);
+      layerRef.current.csv.shelters = L.layerGroup().addTo(m);
+      layerRef.current.csv.lodging  = L.layerGroup().addTo(m);
+      layerRef.current.csv.medical  = L.layerGroup().addTo(m);
+      layerRef.current.csv.mental   = L.layerGroup().addTo(m);
+
+      return ()=> m.remove();
+    }, []);
+
+    const locateMe = useCallback(()=>{
+      const m = mapRef.current; if (!m) return;
+      if (!navigator.geolocation) return alert('此瀏覽器不支援定位');
+      navigator.geolocation.getCurrentPosition(pos=>{
+        const { latitude, longitude } = pos.coords;
+        m.flyTo([latitude, longitude], 15);
+        L.circleMarker([latitude,longitude], {radius:8,color:'#059669',fillColor:'#10b981',fillOpacity:.8,weight:2})
+          .addTo(m).bindPopup('你在這裡').openPopup();
+      },()=>alert('定位失敗，請檢查權限'));
+    }, []);
+
+    // geocode 節流（1.5s/次）
+    const geocodeWithThrottle = useCallback(async (q)=>{
+      const now = Date.now();
+      const wait = Math.max(0, 1500 - (now - lastGeoRef.current));
+      if (wait) await sleep(wait);
+      const res = await geocodeAddress(q);
+      lastGeoRef.current = Date.now();
+      return res;
+    }, []);
+
+    // 讀CSV並畫圖層（只用地址定位；沒地址就跳過）
+    const drawCsvLayers = useCallback(async()=>{
+      Object.values(layerRef.current.csv).forEach(g => g?.clearLayers());
+      const newItems = [];
+
+      for (const ds of DATASETS) {
+        if (!csvVisible[ds.key]) continue;
+        try {
+          const res = await fetch(ds.csv);
+          if (!res.ok) continue;
+          const text = await res.text();
+          const parsed = Papa.parse(text, { header:true, skipEmptyLines:true });
+          const rows = parsed.data || [];
+          for (let idx=0; idx<rows.length; idx++) {
+            const row = rows[idx];
+            let {lat,lng} = detectLatLng(row);
+            const name = tryPick(row, ['名稱','點位','場所','name','title']) || `未命名(${idx+1})`;
+            const addressRaw = tryPick(row, ['地址','住址','address','addr']).trim();
+            const phone = tryPick(row, ['電話','聯絡電話','phone','tel']);
+            const note = tryPick(row, ['備註','說明','描述','note','desc','內容','content']);
+
+            // 以地址為主，沒有地址就不嘗試名稱定位
+            let finalAddr = addressRaw;
+            if ((!isFinite(lat) || !isFinite(lng)) && finalAddr) {
+              const g = await geocodeWithThrottle(finalAddr);
+              if (g) { lat = g.lat; lng = g.lng; }
+            }
+            if (!isFinite(lat) || !isFinite(lng)) continue;
+            if (!isInTaiwanBox(lat, lng)) continue;
+
+            const icon = L.divIcon({
+              className:'custom-pin',
+              html:`<span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:${ds.color};border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.3)"></span>`,
+              iconSize:[16,16], iconAnchor:[8,8]
+            });
+            const marker = L.marker([lat,lng],{icon}).addTo(layerRef.current.csv[ds.key]);
+            const noteHtml = note ? `<div class="text-xs text-gray-600 mt-1 whitespace-pre-wrap">${note}</div>` : '';
+            const phoneHtml = phone ? `<div class="text-xs text-gray-600">📞 ${phone}</div>` : '';
+            const addrHtml = finalAddr ? `<div class="text-xs text-gray-600">📍 ${finalAddr}</div>` : '';
+            marker.bindPopup(`<div class="text-sm">
+              <div class="font-medium mb-1">${name} <span class="text-[10px] text-gray-500">（${ds.label}）</span></div>
+              ${addrHtml}${phoneHtml}${noteHtml}
+              <a class="text-blue-600 underline text-xs" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}">🧭 導航</a>
+            </div>`);
+            newItems.push({ id: `${ds.key}::csv::${idx}`, source:'CSV', key:ds.key, name, address: finalAddr, phone, note, latlng:L.latLng(lat,lng), layer:marker, type:ds.label });
+          }
+        } catch(e){ console.warn('csv load failed:', ds.csv, e); }
+      }
+      setList(prev => [...prev.filter(x=>x.source!=='CSV'), ...newItems]);
+    }, [csvVisible, geocodeWithThrottle]);
+
+    // 繪製手動庇護所（只用地址定位）
+    const drawManualShelters = useCallback(async()=>{
+      const g = layerRef.current.manualShelters; if (!g) return;
+      g.clearLayers();
+      // 先側欄佔位
+      setList(prev => [
+        ...prev.filter(x=>x.source!=='手動'),
+        ...SHELTER_PRESETS.map(s=>({ id:'manual::'+s.name, source:'手動', name:s.name, address:s.address, latlng:null, layer:null, type:'庇護所', pending:true }))
+      ]);
+
+      for (const s of SHELTER_PRESETS) {
+        try {
+          const geo = await geocodeWithThrottle(s.address);
+          if (!geo) continue;
+          const { lat, lng } = geo;
+          if (!isInTaiwanBox(lat, lng)) continue;
+
+          const icon = L.divIcon({
+            className:'',
+            html:`<span style="display:inline-block;width:16px;height:16px;border-radius:50%;background:#10b981;border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.3)"></span>`,
+            iconSize:[18,18], iconAnchor:[9,9]
+          });
+          const mk = L.marker([lat,lng], {icon}).addTo(g).bindPopup(`
+            <div class="text-sm">
+              <div class="font-medium mb-1">${s.name} <span class="text-[10px] text-gray-500">（庇護所）</span></div>
+              <div class="text-xs text-gray-600">📍 ${s.address}</div>
+              <a class="text-blue-600 underline text-xs" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}">🧭 導航</a>
+            </div>`);
+          setList(prev => {
+            const rest = prev.filter(x => x.id!=='manual::'+s.name);
+            return [...rest, { id:'manual::'+s.name, source:'手動', name:s.name, address:s.address, latlng:L.latLng(lat,lng), layer:mk, type:'庇護所', pending:false }];
+          });
+        } catch(e) { console.warn('manual shelter fail', s, e); }
+      }
+    }, [geocodeWithThrottle]);
+
+    // 其他靜態資料
+    const redrawStatic = useCallback(async()=>{
+      if (!mapRef.current) return;
+      const items = [];
+
+      layerRef.current.kml?.clearLayers();
+      layerRef.current.shovel?.clearLayers();
+      layerRef.current.gov?.clearLayers();
+      layerRef.current.user?.clearLayers();
+      layerRef.current.req?.clearLayers();
+
+      // KML（保護性載入）
+      try {
+        if (window.toGeoJSON) {
+          const kmlTxt = await fetchKMLText();
+          const xml = new DOMParser().parseFromString(kmlTxt, 'text/xml');
+          const gj = toGeoJSON.kml(xml);
+          const stylePoint = () => ({ radius:6, color:'#1d4ed8', fillColor:'#3b82f6', fillOpacity:.85, weight:2 });
+          L.geoJSON(gj, {
+            pointToLayer: (f, latlng) => L.circleMarker(latlng, stylePoint()),
+            onEachFeature: (feature, layer) => {
+              const props = feature.properties||{};
+              const name = props.name||'未命名';
+              const desc = (props.description||'').replace(/<[^>]+>/g,'');
+              const latlng = layer.getLatLng();
+              layer.bindPopup(`<div class="text-sm">
+                <div class="font-medium mb-1">${name}</div>
+                <div class="mb-2 whitespace-pre-wrap">${desc}</div>
+                <a target="_blank" rel="noopener" class="text-blue-600 underline text-xs" href="https://www.google.com/maps/dir/?api=1&destination=${latlng.lat},${latlng.lng}">🧭 導航</a>
+              </div>`);
+              items.push({ source:'官方標註', name, address:'', desc, latlng, layer, type:'標註' });
+            },
+            style: { color:'#9333ea', weight:3, opacity:.8 }
+          }).addTo(layerRef.current.kml);
+        }
+      } catch(e){ console.warn('KML parse fail', e); }
+
+      // Shovel
+      try {
+        const r = await fetch(SHOVEL_JSON);
+        const ct = r.headers.get('content-type')||'';
+        if (r.ok && ct.includes('application/json')) {
+          const arr = await r.json();
+          (Array.isArray(arr)?arr:[]).forEach(s=>{
+            const {lat,lng,title,note,type} = s;
+            if (typeof lat!=='number' || typeof lng!=='number') return;
+            const marker = L.marker([lat,lng]).addTo(layerRef.current.shovel)
+              .bindPopup(`<div class="text-sm">
+                <div class="font-medium mb-1">${title||'Shovel 任務'}</div>
+                <div class="mb-2">${note||''}</div>
+                <a target="_blank" rel="noopener" class="text-blue-600 underline text-xs" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}">🧭 導航</a>
+              </div>`);
+            items.push({ source:'Shovel', name:title||'任務', address:'', desc:note||'', latlng:L.latLng(lat,lng), layer:marker, type:type||'志工任務' });
+          });
+        }
+      } catch(e){ console.warn('Shovel load fail', e); }
+
+      // 政府點位
+      try {
+        const r = await fetch(GOV_POINTS_URL);
+        if (r.ok) {
+          const gj = await r.json();
+          const govIcon = (type) => {
+            const map = {
+              medical:{c:'#ef4444',t:'🅷'}, volunteer:{c:'#0ea5e9',t:'志'},
+              mud_storage:{c:'#78350f',t:'泥'}, waste_storage:{c:'#334155',t:'垃'},
+              meal_distribution:{c:'#f59e0b',t:'🍱'}, general:{c:'#64748b',t:'政'}
+            };
+            const info = map[type] || map.general;
+            return L.divIcon({
+              html:`<div style="background:${info.c};border:2px solid #fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;box-shadow:0 0 0 1px rgba(0,0,0,.3)">${info.t}</div>`,
+              className:'', iconSize:[26,26], iconAnchor:[13,13], popupAnchor:[0,-13]
+            });
+          };
+          (gj.features||[]).forEach((f)=>{
+            if (f.geometry?.type!=='Point') return;
+            const [lng,lat] = f.geometry.coordinates||[];
+            if (!isFinite(lat)||!isFinite(lng)) return;
+            const p = f.properties||{};
+            const mk = L.marker([lat,lng],{icon:govIcon(p.type)}).addTo(layerRef.current.gov)
+              .bindPopup(`<div class="text-sm">
+                <div class="font-medium mb-1">${p.name||'政府設施'}</div>
+                <div class="mb-2 whitespace-pre-wrap">${p.description||''}</div>
+                <a target="_blank" rel="noopener" class="text-blue-600 underline text-xs" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}">🧭 導航</a>
+              </div>`);
+            items.push({ source:'政府設施', name:p.name||'設施', address:'', desc:p.description||'', latlng:L.latLng(lat,lng), layer:mk, type:'政府設施' });
+          });
+        }
+      } catch(e){ console.warn('gov points fail', e); }
+
+      // 自建點
+      try {
+        const arr = JSON.parse(localStorage.getItem(LS_USER_ADDS)||'[]');
+        arr.forEach(u=>{
+          const marker = L.marker([u.lat,u.lng]).addTo(layerRef.current.user)
+            .bindPopup(`<div class="text-sm">
+              <div class="font-medium mb-1">${u.name}</div>
+              <div class="mb-2">${u.desc||''}</div>
+              <a target="_blank" rel="noopener" class="text-blue-600 underline text-xs" href="https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}">🧭 導航</a>
+            </div>`);
+          items.push({ ...u, source:'自建', address:u.address||'', latlng:L.latLng(u.lat,u.lng), layer:marker });
+        });
+      } catch(e){}
+
+      // 需求點
+      try {
+        const reqPts = (requests||[]).filter(r=>r.location?.lat && r.location?.lng);
+        reqPts.forEach(r=>{
+          const { lat, lng } = r.location;
+          const mk = L.marker([lat,lng]).addTo(layerRef.current.req)
+            .bindPopup(`<div class="text-sm">
+              <div class="font-medium mb-1">${r.type}</div>
+              <div class="mb-1 whitespace-pre-wrap">${r.description||''}</div>
+              <div class="text-xs text-gray-500 mb-2">聯絡：${r.contactPerson||''} / ${r.contactPhone||''}</div>
+              <a target="_blank" rel="noopener" class="text-blue-600 underline text-xs" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}">🧭 導航</a>
+            </div>`);
+          items.push({ source:'需求', name:r.type, address:r.address||'', desc:r.description||'', latlng:L.latLng(lat,lng), layer:mk, type:r.type });
+        });
+      } catch(e){}
+
+      setList(prev => [
+        ...prev.filter(x=>!['官方標註','Shovel','自建','需求','政府設施'].includes(x.source)),
+        ...items
+      ]);
+    }, [requests]);
+
+    useEffect(() => { redrawStatic(); drawCsvLayers(); drawManualShelters(); }, [drawCsvLayers, redrawStatic, drawManualShelters]);
+
+    // 列表篩選
+    const filteredList = useMemo(()=>{
+      return list
+        .slice()
+        .sort((a,b)=> (a.pending===true) - (b.pending===true))
+        .filter(it=>{
+          const okF = filterKey==='全部'
+            ? true
+            : (it.type && it.type.includes(filterKey)) ||
+              (it.source==='官方標註' && filterKey==='標註') ||
+              (it.source==='Shovel' && filterKey==='志工任務') ||
+              (it.source==='政府設施' && filterKey==='政府設施');
+          const q = search.trim().toLowerCase();
+          const okQ = q==='' ? true : (it.name||'').toLowerCase().includes(q) || (it.address||'').toLowerCase().includes(q) || (it.desc||'').toLowerCase().includes(q);
+          return okF && okQ;
+        });
+    }, [list, filterKey, search]);
+
+    // 控制CSV layer顯示
+    const toggleCsv = (k) => {
+      setCsvVisible(v => {
+        const next = { ...v, [k]: !v[k] };
+        const layer = layerRef.current.csv[k];
+        if (layer && mapRef.current) {
+          if (next[k]) layer.addTo(mapRef.current); else mapRef.current.removeLayer(layer);
+        }
+        drawCsvLayers();
+        return next;
+      });
+    };
+
+    return (
+      <>
+        {showOfficial && <DisasterMap isOpen onClose={()=>setShowOfficial(false)} />}
+        <div className="bg-white rounded-lg border p-4 ui-over">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-lg font-bold">🗺️ 光復災情整合地圖（可導航）</h3>
+            <div className="flex items-center gap-2">
+              <button onClick={locateMe} className="px-3 py-1.5 text-sm rounded bg-slate-700 text-white hover:bg-slate-800">📍 定位我</button>
+              <button onClick={()=>setShowAddForm(true)} className="px-3 py-1.5 text-sm rounded bg-slate-700 text-white hover:bg-emerald-700">➕ 新增點位</button>
+              <button onClick={()=>setShowOfficial(true)} className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700">查看官方地圖</button>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+            <div className="lg:col-span-3">
+              <div id="gf-map" className="w-full h-[60vh] rounded border"></div>
+            </div>
+            <div className="lg:col-span-1">
+              <div className="flex gap-2 mb-2">
+                <select value={filterKey} onChange={(e)=>setFilterKey(e.target.value)} className="w-40 px-2 py-1.5 border rounded text-sm">
+                  <option>全部</option>
+                  <option>政府設施</option>
+                  <option>物資</option>
+                  <option>醫療</option>
+                  <option>供水</option>
+                  <option>路障</option>
+                  <option>志工任務</option>
+                  <option>標註</option>
+                  <option>洗澡點</option>
+                  <option>庇護所</option>
+                  <option>住宿</option>
+                  <option>心理</option>
+                  <option>其他</option>
+                </select>
+                <input value={search} onChange={(e)=>setSearch(e.target.value)} className="flex-1 px-2 py-1.5 border rounded text-sm" placeholder="搜尋名稱/地址/備註"/>
+              </div>
+              <div className="text-xs text-gray-500 mb-2">
+                來源：官方 KML + Shovel + 政府設施 + 自建點 + 需求表單 + CSV（洗澡點/庇護所/住宿/醫療/心理）
+              </div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-2 mb-3 text-xs">
+                {DATASETS.map(ds=>(
+                  <label key={ds.key} className="flex items-center gap-1"><input type="checkbox" checked={!!csvVisible[ds.key]} onChange={()=>toggleCsv(ds.key)}/> {ds.label}</label>
+                ))}
+              </div>
+              <div className="max-h-[60vh] overflow-auto space-y-2">
+                {filteredList.map((it, idx)=>(
+                  <div key={idx} className="border rounded p-2">
+                    <div className="text-sm font-medium">
+                      {it.name || '未命名'} <span className="text-[11px] text-slate-500">（{it.source}）</span>
+                      {it.pending ? <span className="ml-2 text-[11px] text-amber-600">等待定位…</span> : null}
+                    </div>
+                    {it.type && <div className="text-[11px] text-gray-500 mt-0.5">類型：{it.type}</div>}
+                    {it.address && <div className="text-[12px] text-gray-600 mt-1">📍 {it.address}</div>}
+                    {it.desc && <div className="text-[12px] text-gray-600 mt-1 whitespace-pre-wrap">{it.desc}</div>}
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        onClick={()=>{ if(it.latlng && mapRef.current) { mapRef.current.flyTo(it.latlng, 16); it.layer?.openPopup(); } }}
+                        className="px-2 py-1 text-xs rounded bg-slate-700 text-white"
+                        disabled={!it.latlng}
+                        title={it.latlng?'地圖定位':'尚未取得座標'}>
+                        定位
+                      </button>
+                      {it.latlng ? (
+                        <button onClick={()=>{ window.open(`https://www.google.com/maps/dir/?api=1&destination=${it.latlng.lat},${it.latlng.lng}`,'_blank'); }} className="px-2 py-1 text-xs rounded bg-green-600 text-white">導航</button>
+                      ) : (
+                        <button onClick={()=>{ if(it.address){ window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(it.address)}`,'_blank'); } }} className="px-2 py-1 text-xs rounded bg-green-600 text-white" disabled={!it.address}>用地址開啟</button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {filteredList.length===0 && <div className="text-xs text-gray-500">沒有符合條件的點位</div>}
+              </div>
+              {/* 手機寬度時顯示外部連結 */}
+              <div className="mt-4 flex md:hidden flex-wrap gap-2">
+                {EXTERNAL_LINKS.map(l=>(
+                  <a key={l.url} href={l.url} target="_blank" rel="noopener" className="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700">{l.name}</a>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+        {showAddForm && (
+          <AddPointForm
+            isOpen={showAddForm}
+            onClose={()=>setShowAddForm(false)}
+            onSubmit={async ({ name, category, address, note, phone, lat, lng })=>{
+              try {
+                let plat = Number(lat), plng = Number(lng);
+                if (!isFinite(plat) || !isFinite(plng)) {
+                  if (address) {
+                    const g = await geocodeAddress(address);
+                    if (g) { plat = g.lat; plng = g.lng; }
+                  }
+                }
+                if (!isFinite(plat) || !isFinite(plng)) { alert('找不到座標，請調整地址或填入經緯度'); return; }
+                const mk = L.marker([plat,plng]).addTo(layerRef.current.user)
+                  .bindPopup(`<div class="text-sm">
+                    <div class="font-medium mb-1">${name}</div>
+                    ${address?`<div class='text-xs text-gray-600'>📍 ${address}</div>`:''}
+                    ${phone?`<div class='text-xs text-gray-600'>📞 ${phone}</div>`:''}
+                    ${note?`<div class='text-xs text-gray-600 whitespace-pre-wrap mt-1'>${note}</div>`:''}
+                    <a class="text-blue-600 underline text-xs" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${plat},${plng}">🧭 導航</a>
+                  </div>`);
+                const newItem = { id: 'user::'+uuid(), source:'自建', name, address, desc:note, phone, type:category, latlng:L.latLng(plat,plng), layer:mk };
+                const arr = JSON.parse(localStorage.getItem(LS_USER_ADDS)||'[]'); arr.push({ ...newItem, lat:plat, lng:plng });
+                localStorage.setItem(LS_USER_ADDS, JSON.stringify(arr));
+                setList(prev => [...prev, newItem]);
+                mapRef.current?.flyTo([plat,plng], 16); mk.openPopup();
+                setShowAddForm(false);
+              } catch(e){ alert('新增失敗，請再試一次'); }
+            }}
+          />
+        )}
+      </>
+    );
+  };
+
+  async function fetchKMLText() {
+    const r = await fetch(KML_URL);
+    if (!r.ok) throw new Error('blocked');
+    return await r.text();
+  }
+
+  // 新增點位表單
+  const AddPointForm = ({ isOpen, onClose, onSubmit }) => {
+    const [name, setName] = useState('');
+    const [category, setCategory] = useState('其他');
+    const [address, setAddress] = useState('');
+    const [lat, setLat] = useState('');
+    const [lng, setLng] = useState('');
+  const [note, setNote] = useState('');
+  const [phone, setPhone] = useState('');
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
+    if (!isOpen) return null;
+
+    const useMyLocation = () => {
+      if (!navigator.geolocation) { setError('此瀏覽器不支援定位'); return; }
+      navigator.geolocation.getCurrentPosition(pos=>{
+        setLat(pos.coords.latitude.toFixed(6));
+        setLng(pos.coords.longitude.toFixed(6));
+        setAddress(`GPS: ${pos.coords.latitude.toFixed(6)}, ${pos.coords.longitude.toFixed(6)}`);
+      },()=>setError('定位失敗，請檢查權限'), {enableHighAccuracy:true, timeout:10000});
+    };
+
+    const handleSubmit = async (e) => {
+      e.preventDefault(); setError(''); setLoading(true);
+      try { await onSubmit({ name, category, address, note, phone, lat, lng }); }
+      finally { setLoading(false); }
+    };
+
+    const cats = ['物資','醫療','供水','路障','志工任務','洗澡點','庇護所','住宿','心理','其他'];
+    return (
+      <div className="fixed inset-0 bg-black/50 modal-z flex items-center justify-center p-4">
+        <div className="bg-white rounded-lg w-full max-w-md">
+          <div className="p-4 border-b flex items-center justify-between">
+            <h3 className="font-bold">新增點位</h3>
+            <button onClick={onClose} className="text-gray-500">✕</button>
+          </div>
+          <form onSubmit={handleSubmit} className="p-4 space-y-3">
+            <div>
+              <label className="block text-sm">名稱</label>
+              <input value={name} onChange={e=>setName(e.target.value)} className="mt-1 w-full border rounded px-2 py-1" placeholder="例如：圖 方便 背包客民宿"/>
+            </div>
+            <div>
+              <label className="block text-sm">分類</label>
+              <select value={category} onChange={e=>setCategory(e.target.value)} className="mt-1 w-full border rounded px-2 py-1">
+                {cats.map(c=> <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm">地址（與或經緯度）</label>
+              <input value={address} onChange={e=>setAddress(e.target.value)} className="mt-1 w-full border rounded px-2 py-1" placeholder="花蓮縣光復鄉…"/>
+              <div className="text-xs text-gray-500 mt-1">可留空改用下方經緯度或「📍 以目前位置填入」</div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-sm">緯度</label>
+                <input value={lat} onChange={e=>setLat(e.target.value)} className="mt-1 w-full border rounded px-2 py-1" placeholder="23.6..."/>
+              </div>
+              <div>
+                <label className="block text-sm">經度</label>
+                <input value={lng} onChange={e=>setLng(e.target.value)} className="mt-1 w-full border rounded px-2 py-1" placeholder="121.4..."/>
+              </div>
+            </div>
+            <div>
+              <button type="button" onClick={useMyLocation} className="text-xs px-2 py-1 bg-slate-600 text-white rounded">📍 以目前位置填入</button>
+            </div>
+            <div>
+              <label className="block text-sm">電話（選填）</label>
+              <input value={phone} onChange={e=>setPhone(e.target.value)} className="mt-1 w-full border rounded px-2 py-1"/>
+            </div>
+            <div>
+              <label className="block text-sm">備註（選填）</label>
+              <textarea rows="3" value={note} onChange={e=>setNote(e.target.value)} className="mt-1 w-full border rounded px-2 py-1"/>
+            </div>
+            {error && <div className="text-red-600 text-sm">{error}</div>}
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={onClose} className="px-3 py-1.5 text-sm rounded bg-slate-100">取消</button>
+              <button type="submit" disabled={loading} className="px-3 py-1.5 text-sm rounded bg-emerald-600 text-white">{loading?'處理中…':'新增'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
+  /* ---------------- 需求 / 表單 ---------------- */
+  const VolunteerSignup = ({ onSubmit }) => {
+    const [name,setName]=useState('');
+    const [phone,setPhone]=useState('');
+    const [note,setNote]=useState('');
+    const [error,setError]=useState('');
+    const [submitting,setSubmitting]=useState(false);
+    const handleSubmit=(e)=>{
+      e.preventDefault();
+      if(!name||!phone){setError('請輸入姓名與電話'); return;}
+      setError('');
+      const payload = {name,phone,note};
+      const maybePromise = onSubmit(payload);
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        setSubmitting(true);
+        maybePromise.then(()=>{
+          setName(''); setPhone(''); setNote('');
+        }).catch((err)=>{
+          console.error('volunteer submit failed', err);
+          setError(typeof err?.message === 'string' ? err.message : '送出失敗，請稍後再試');
+        }).finally(()=>setSubmitting(false));
+      } else {
+        setName(''); setPhone(''); setNote('');
+      }
+    };
+    return (
+      <form onSubmit={handleSubmit} className="mt-3 space-y-3 bg-slate-50 border border-slate-200 rounded-md p-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div><label className="block text-xs font-medium text-slate-700">姓名</label><input value={name} onChange={(e)=>setName(e.target.value)} className="mt-1 w-full px-3 py-2 border border-slate-300 rounded-md text-sm"/></div>
+          <div><label className="block text-xs font-medium text-slate-700">電話</label><input value={phone} onChange={(e)=>setPhone(e.target.value)} className="mt-1 w-full px-3 py-2 border border-slate-300 rounded-md text-sm"/></div>
+        </div>
+        <div><label className="block text-xs font-medium text-slate-700">備註（可選）</label><input value={note} onChange={(e)=>setNote(e.target.value)} className="mt-1 w-full px-3 py-2 border border-slate-300 rounded-md text-sm"/></div>
+        {error && <p className="text-red-500 text-xs">{error}</p>}
+        <div className="flex gap-2 justify-end"><button type="submit" disabled={submitting} className="px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-md disabled:bg-slate-400">{submitting?'送出中...':'送出報名'}</button></div>
+      </form>
+    );
+  };
+
+  const RequestCard = ({ request, onUpdateStatus, onAddVolunteer }) => {
+    const { id, type, status, contactPerson, contactPhone, address, description, createdAt } = request;
+    const [updating, setUpdating] = useState(false);
+    const [actionError, setActionError] = useState('');
+    const statusColors = {
+      [RequestStatus.NEW]:'bg-blue-100 text-blue-800',
+      [RequestStatus.IN_PROGRESS]:'bg-yellow-100 text-yellow-800',
+      [RequestStatus.COMPLETED]:'bg-green-100 text-green-800',
+    };
+    const handleStatusChange = (nextStatus) => {
+      if (!onUpdateStatus) return;
+      const result = onUpdateStatus(id, nextStatus);
+      if (result && typeof result.then === 'function') {
+        setUpdating(true);
+        setActionError('');
+        result.catch(err => {
+          console.error('update status failed', err);
+          setActionError(typeof err?.message === 'string' ? err.message : '狀態更新失敗，請稍後再試');
+        }).finally(()=>setUpdating(false));
+      }
+    };
+    return (
+      <div className={`bg白 rounded-lg shadow-md overflow-hidden border-l-4 ${type===RequestType.VOLUNTEER?'border-sky-500':'border-amber-500'}`}>
+        <div className="p-5">
+          <div className="flex justify-between items-start">
+            <h3 className="text-lg font-bold">{type}</h3>
+            <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${statusColors[status]}`}>{status}</span>
+          </div>
+          <p className="mt-3 text-slate-700 whitespace-pre-wrap">{description}</p>
+          <div className="mt-4 border-t border-slate-200 pt-4 space-y-2 text-sm text-slate-600">
+            <div>👤 {contactPerson}</div>
+            <div>📞 {contactPhone}</div>
+            <div className="flex items-center justify-between">
+              <div>📍 {address}</div>
+              {request.location?.lat && request.location?.lng && (
+                <a href={`https://www.google.com/maps/dir/?api=1&destination=${request.location.lat},${request.location.lng}`}
+                   target="_blank" rel="noopener noreferrer"
+                   className="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700">🧭 導航</a>
+              )}
+            </div>
+            <div className="text-xs text-slate-500">發佈於: {new Date(createdAt).toLocaleString('zh-TW')}</div>
+          </div>
+          {actionError && <p className="mt-3 text-sm text-red-500">{actionError}</p>}
+          {status !== RequestStatus.COMPLETED && (
+            <div className="mt-5 pt-4 border-t border-slate-200 flex space-x-2">
+              {status === RequestStatus.NEW && (
+                <button onClick={()=>handleStatusChange(RequestStatus.IN_PROGRESS)} disabled={updating} className="w-full text-center px-4 py-2 bg-yellow-500 text-white font-semibold rounded-md hover:bg-yellow-600 disabled:bg-yellow-300">{updating?'更新中...':'我來處理'}</button>
+              )}
+              {status === RequestStatus.IN_PROGRESS && (
+                <button onClick={()=>handleStatusChange(RequestStatus.COMPLETED)} disabled={updating} className="w-full text-center px-4 py-2 bg-green-500 text-white font-semibold rounded-md hover:bg-green-600 disabled:bg-green-300">{updating?'更新中...':'標示為已完成'}</button>
+              )}
+            </div>
+          )}
+          {type === RequestType.VOLUNTEER && status !== RequestStatus.COMPLETED && (
+            <div className="mt-5">
+              <h4 className="text-sm font-semibold text-slate-800">志工報名</h4>
+              <VolunteerSignup onSubmit={(vol)=> onAddVolunteer ? onAddVolunteer(id, vol) : Promise.resolve()} />
+              {Array.isArray(request.volunteers) && request.volunteers.length>0 && (
+                <div className="mt-3 text-sm text-slate-700">
+                  <p className="font-medium">已報名（{request.volunteers.length}）</p>
+                  <ul className="mt-1 space-y-1">{request.volunteers.map((v,i)=>(<li key={i} className="text-xs"><span className="px-2 py-0.5 rounded bg-slate-100 mr-2">{v.name}</span>{v.phone}{v.note?`（${v.note}）`:''}</li>))}</ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, activeFilter }) => {
+    const filtered = requests.filter(r => activeFilter==='全部' ? true : r.type===activeFilter);
+    const order = {[RequestStatus.NEW]:1,[RequestStatus.IN_PROGRESS]:2,[RequestStatus.COMPLETED]:3};
+    const sorted = filtered.sort((a,b)=> a.status===b.status ? new Date(b.createdAt)-new Date(a.createdAt) : order[a.status]-order[b.status]);
+    return (
+      <div className="py-8 ui-over">
+        {sorted.length ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {sorted.map(r=>(<RequestCard key={r.id} request={r} onUpdateStatus={onUpdateStatus} onAddVolunteer={onAddVolunteer} />))}
+          </div>
+        ) : (
+          <div className="text-center py-12">
+            <div className="mx-auto h-12 w-12 text-gray-400">ℹ️</div>
+            <h3 className="mt-2 text-lg font-medium">目前沒有需求</h3>
+            <p className="mt-1 text-sm text-gray-500">點擊「登記災情需求」來新增第一筆資料。</p>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const RequestForm = ({ isOpen, onClose, onSubmit }) => {
+    const [type, setType] = useState(RequestType.VOLUNTEER);
+    const [contactPerson, setContactPerson] = useState('');
+    const [contactPhone, setContactPhone] = useState('');
+    const [address, setAddress] = useState('');
+    const [description, setDescription] = useState('');
+    const [error, setError] = useState('');
+    const [location, setLocation] = useState(null);
+    const [gettingLocation, setGettingLocation] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+    if (!isOpen) return null;
+
+    // 定位自己的即時位置
+    const getCurrentLocation = () => {
+      if (!navigator.geolocation) { setError('您的瀏覽器不支援定位功能'); return; }
+      setGettingLocation(true);
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const { latitude, longitude } = pos.coords;
+          setLocation({ lat: latitude, lng: longitude });
+          setAddress(`GPS: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+          setGettingLocation(false);
+        },
+        () => { setError('無法取得位置，請手動輸入地址'); setGettingLocation(false); },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    };
+
+    const handleSubmit = (e) => {
+      e.preventDefault();
+      if (!contactPerson || !contactPhone || !address || !description) { setError('所有欄位皆為必填項目。'); return; }
+      setError('');
+      const payload = { type, contactPerson, contactPhone, address, description, location: location ? {lat:location.lat,lng:location.lng} : null };
+      const maybePromise = onSubmit(payload);
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        setSubmitting(true);
+        maybePromise.then(()=>{
+          setContactPerson(''); setContactPhone(''); setAddress(''); setDescription(''); setLocation(null);
+          onClose();
+        }).catch(err => {
+          console.error('submit request failed', err);
+          setError(typeof err?.message === 'string' ? err.message : '送出失敗，請稍後再試');
+        }).finally(()=>setSubmitting(false));
+      } else {
+        setContactPerson(''); setContactPhone(''); setAddress(''); setDescription(''); setLocation(null); onClose();
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/50 modal-z flex justify-center items-center p-4">
+        <div className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-full overflow-y-auto">
+          <div className="p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-bold text-slate-800">登記新的需求</h2>
+              <button onClick={onClose} className="text-slate-500 hover:text-slate-800">✕</button>
+            </div>
+            <form onSubmit={handleSubmit}>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">需求類型</label>
+                  <div className="flex space-x-4">
+                    <label className="flex items-center">
+                      <input type="radio" name="type" value={RequestType.VOLUNTEER} checked={type===RequestType.VOLUNTEER} onChange={(e)=>setType(e.target.value)} className="h-4 w-4 text-indigo-600"/>
+                      <span className="ml-2 text-slate-800">志工人力</span>
+                    </label>
+                    <label className="flex items-center">
+                      <input type="radio" name="type" value={RequestType.SUPPLY} checked={type===RequestType.SUPPLY} onChange={(e)=>setType(e.target.value)} className="h-4 w-4 text-indigo-600"/>
+                      <span className="ml-2 text-slate-800">物資需求</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700">聯絡人姓名</label>
+                  <input value={contactPerson} onChange={(e)=>setContactPerson(e.target.value)} className="mt-1 block w-full px-3 py-2 bg白 border border-slate-300 rounded-md shadow-sm sm:text-sm"/>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700">聯絡電話</label>
+                  <input value={contactPhone} onChange={(e)=>setContactPhone(e.target.value)} className="mt-1 block w-full px-3 py-2 bg白 border border-slate-300 rounded-md shadow-sm sm:text-sm"/>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700">地址或位置</label>
+                  <div className="flex gap-2">
+                    <input value={address} onChange={(e)=>setAddress(e.target.value)} className="flex-1 px-3 py-2 bg白 border border-slate-300 rounded-md shadow-sm sm:text-sm" placeholder="請輸入地址或點擊定位" />
+                    <button type="button" onClick={getCurrentLocation} disabled={gettingLocation} className="px-3 py-2 bg-blue-600 text白 rounded-md hover:bg-blue-700 disabled:bg-gray-400 text-sm">
+                      {gettingLocation ? '定位中...' : '📍 定位'}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700">詳細需求說明</label>
+                  <textarea rows={4} value={description} onChange={(e)=>setDescription(e.target.value)} className="mt-1 block w-full px-3 py-2 bg白 border border-slate-300 rounded-md shadow-sm sm:text-sm"></textarea>
+                </div>
+                {error && <p className="text-red-500 text-sm">{error}</p>}
+              </div>
+
+              <div className="mt-6 flex justify-end space-x-3">
+                <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200" disabled={submitting}>取消</button>
+                <button type="submit" disabled={submitting} className="px-4 py-2 text-sm font-medium text白 bg-indigo-600 rounded-md shadow-sm hover:bg-indigo-700 disabled:bg-indigo-400">{submitting?'送出中...':'送出需求'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  /* ---------------- App 主組件 ---------------- */
+  const App = () => {
+    const [requests, setRequests] = useState([]);
+    const [isFormOpen, setIsFormOpen] = useState(false);
+    const [activeFilter, setActiveFilter] = useState('全部');
+    const [loadingRequests, setLoadingRequests] = useState(true);
+    const [requestError, setRequestError] = useState(null);
+
+    const fetchRequests = useCallback(async () => {
+      setLoadingRequests(true);
+      setRequestError(null);
+      try {
+        const res = await fetch('/api/requests');
+        const data = await parseJSONResponse(res, '需求列表載入失敗');
+        setRequests(Array.isArray(data) ? data : []);
+      } catch (err) {
+        console.error('fetch requests error', err);
+        setRequestError(err?.message || '需求列表載入失敗');
+      } finally {
+        setLoadingRequests(false);
+      }
+    }, []);
+
+    useEffect(()=>{ fetchRequests(); }, [fetchRequests]);
+
+    const addRequest = useCallback(async (data)=>{
+      try {
+        const res = await fetch('/api/requests', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(data)
+        });
+        const created = await parseJSONResponse(res, '新增需求失敗');
+        setRequests(prev => [created, ...prev]);
+      } catch (err) {
+        console.error('add request failed', err);
+        throw err;
+      }
+    }, []);
+
+    const updateStatus = useCallback(async (id, status)=>{
+      try {
+        const res = await fetch(`/api/requests/${id}/status`, {
+          method:'PATCH',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ status })
+        });
+        const updated = await parseJSONResponse(res, '狀態更新失敗');
+        setRequests(prev => prev.map(r => r.id===id ? updated : r));
+      } catch (err) {
+        console.error('update status failed', err);
+        throw err;
+      }
+    }, []);
+
+    const addVolunteer = useCallback(async (id, vol)=>{
+      try {
+        const res = await fetch(`/api/requests/${id}/volunteers`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(vol)
+        });
+        const updated = await parseJSONResponse(res, '志工報名失敗');
+        setRequests(prev => prev.map(r => r.id===id ? updated : r));
+      } catch (err) {
+        console.error('add volunteer failed', err);
+        throw err;
+      }
+    }, []);
+
+    const filters = ['全部', RequestType.VOLUNTEER, RequestType.SUPPLY];
+
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <EmergencyTicker/>
+        <Header/>
+        <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <WeatherAlert/>
+          <LeafletMapPanel requests={requests}/>
+          <div className="flex flex-col sm:flex-row justify-between items-center mb-6 gap-4 ui-over">
+            <div className="w-full sm:w-auto">
+              <div className="flex bg-slate-200 rounded-lg p-1">
+                {filters.map(f=>(
+                  <button key={f} onClick={()=>setActiveFilter(f)}
+                    className={`w-full sm:w-auto px-4 py-2 text-sm font-semibold rounded-md ${activeFilter===f ? 'bg白 text-indigo-700 shadow' : 'text-slate-600 hover:bg-slate-300'}`}>
+                    {f}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button onClick={()=>setIsFormOpen(true)} className="w-full sm:w-auto px-5 py-2.5 bg-indigo-600 text白 font-semibold rounded-lg shadow-md hover:bg-indigo-700 flex items-center justify-center">
+              <span className="mr-2">➕</span>📍 登記災情需求
+            </button>
+          </div>
+          {requestError && (
+            <div className="w-full mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <span>{requestError}</span>
+              <button onClick={()=>fetchRequests()} className="inline-flex items-center justify-center px-3 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700">重新嘗試</button>
+            </div>
+          )}
+          {loadingRequests ? (
+            <div className="py-12 text-center text-sm text-slate-500">需求列表載入中…</div>
+          ) : (
+            <RequestDashboard requests={requests} onUpdateStatus={updateStatus} onAddVolunteer={addVolunteer} activeFilter={activeFilter}/>
+          )}
+        </main>
+        <RequestForm isOpen={isFormOpen} onClose={()=>setIsFormOpen(false)} onSubmit={addRequest}/>
+      </div>
+    );
+  };
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>

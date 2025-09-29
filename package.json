@@ -1,0 +1,17 @@
+{
+  "name": "fuxing",
+  "version": "1.0.0",
+  "private": false,
+  "scripts": {
+    "start": "node server/index.js",
+    "build": "echo No build step"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "esbuild": "^0.23.0",
+    "express": "^4.19.2",
+    "pg": "^8.11.5",
+    "rss-parser": "^3.13.0"
+  }
+}
