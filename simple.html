@@ -1224,8 +1224,8 @@
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-slate-700">聯絡人姓名</label>
-                  <input value={contactPerson} onChange={(e)=>setContactPerson(e.target.value)} className="mt-1 block w-full px-3 py-2 bg白 border border-slate-300 rounded-md shadow-sm sm:text-sm"/>
+                  <label className="block text-sm font-medium text-slate-700">聯絡人（可填暱稱或姓氏）</label>
+                  <input value={contactPerson} onChange={(e)=>setContactPerson(e.target.value)} placeholder="例：小明、王先生、阿志" className="mt-1 block w-full px-3 py-2 bg白 border border-slate-300 rounded-md shadow-sm sm:text-sm"/>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700">聯絡電話</label>
@@ -1287,10 +1287,16 @@
 
     const addRequest = useCallback(async (data)=>{
       try {
+        // 若看起來像含有全名（兩到三個中文字且非單姓/暱稱），做簡單遮蔽，只留姓或首字
+        let safeName = (data.contactPerson||'').trim();
+        if (/^[\u4e00-\u9fa5]{2,4}$/.test(safeName)) {
+          safeName = safeName.slice(0,1) + '○';
+        }
+        const payload = { ...data, contactPerson: safeName };
         const res = await fetch('/api/requests', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body: JSON.stringify(data)
+          body: JSON.stringify(payload)
         });
         const created = await parseJSONResponse(res, '新增需求失敗');
         setRequests(prev => [created, ...prev]);
@@ -1332,7 +1338,12 @@
 
     const deleteRequest = useCallback(async (id)=>{
       try {
-        const res = await fetch(`/api/requests/${id}`, { method: 'DELETE' });
+        // 先嘗試標準 DELETE
+        let res = await fetch(`/api/requests/${id}`, { method: 'DELETE' });
+        if (!res.ok) {
+          // 若 DELETE 被擋，改用 POST 備援
+          res = await fetch(`/api/requests/${id}/delete`, { method: 'POST' });
+        }
         await parseJSONResponse(res, '刪除需求失敗');
         setRequests(prev => prev.filter(r => r.id !== id));
       } catch (err) {

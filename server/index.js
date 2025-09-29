@@ -174,6 +174,11 @@ app.post('/api/requests', async (req, res) => {
     if (!type || !contactPerson || !contactPhone || !address || !description) {
       return res.status(400).json({ error: '缺少必要欄位' });
     }
+    // 若姓名看起來像 2-4 個中文，做簡單遮蔽，只留姓氏
+    let safeContactPerson = String(contactPerson || '').trim();
+    if (/^[\u4e00-\u9fa5]{2,4}$/.test(safeContactPerson)) {
+      safeContactPerson = safeContactPerson.slice(0, 1) + '○';
+    }
     const id = uuid();
     const createdAt = new Date().toISOString();
     const status = '新登記';
@@ -183,7 +188,7 @@ app.post('/api/requests', async (req, res) => {
        (id, type, contact_person, contact_phone, address, description, status, location_lat, location_lng, created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [
-        id, type, contactPerson, contactPhone, address, description, status,
+        id, type, safeContactPerson, contactPhone, address, description, status,
         location?.lat ?? null, location?.lng ?? null, createdAt
       ]
     );
@@ -241,6 +246,35 @@ app.post('/api/requests/:id/volunteers', async (req, res) => {
     res.status(201).json(serializeRequestRow(rows[0], vrows));
   } catch (err) {
     console.error('Add volunteer error', err);
+    res.status(500).json({ error: '伺服器錯誤' });
+  }
+});
+
+app.delete('/api/requests/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
+    if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
+
+    await pool.query('DELETE FROM requests WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete request error', err);
+    res.status(500).json({ error: '伺服器錯誤' });
+  }
+});
+
+// 一些環境/網路可能會擋 DELETE，提供 POST 備援路由
+app.post('/api/requests/:id/delete', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
+    if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
+
+    await pool.query('DELETE FROM requests WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete request (POST fallback) error', err);
     res.status(500).json({ error: '伺服器錯誤' });
   }
 });
