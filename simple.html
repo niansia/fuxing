@@ -38,7 +38,7 @@
 
   /* ---------------- 常數 / 公用 ---------------- */
   const RequestType = { VOLUNTEER: '志工人力', SUPPLY: '物資需求' };
-  const RequestStatus = { NEW:'新登記', IN_PROGRESS:'處理中', COMPLETED:'已完成' };
+  const RequestStatus = { NEW:'新登記', IN_PROGRESS:'已前往', COMPLETED:'已完成' };
   const uuid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
   const CENTER = { lat: 23.6697, lon: 121.4235 };
@@ -945,15 +945,62 @@
     );
   };
 
-  const RequestCard = ({ request, onUpdateStatus, onAddVolunteer }) => {
+  const RequestStatusSummary = ({ requests }) => {
+    const summary = useMemo(() => {
+      const base = {
+        newCount: 0,
+        inProgressCount: 0,
+        completedCount: 0,
+        volunteerCount: 0
+      };
+      (requests || []).forEach(req => {
+        if (req.status === RequestStatus.NEW) base.newCount += 1;
+        if (req.status === RequestStatus.IN_PROGRESS) base.inProgressCount += 1;
+        if (req.status === RequestStatus.COMPLETED) base.completedCount += 1;
+        if (Array.isArray(req.volunteers)) base.volunteerCount += req.volunteers.length;
+      });
+      return base;
+    }, [requests]);
+
+    const cards = [
+      { label: '新登記', value: summary.newCount, accent: 'bg-blue-50 text-blue-700 border border-blue-100', icon: '🆕' },
+      { label: '已前往', value: summary.inProgressCount, accent: 'bg-amber-50 text-amber-700 border border-amber-100', icon: '🚚' },
+      { label: '已完成', value: summary.completedCount, accent: 'bg-emerald-50 text-emerald-700 border border-emerald-100', icon: '✅' },
+      { label: '支援人數', value: summary.volunteerCount, accent: 'bg-purple-50 text-purple-700 border border-purple-100', icon: '👥' }
+    ];
+
+    return (
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {cards.map(card => (
+          <div key={card.label} className={`rounded-lg px-4 py-3 shadow-sm ${card.accent}`}>
+            <div className="text-xs uppercase tracking-wide font-semibold opacity-80 flex items-center gap-1">
+              <span>{card.icon}</span>
+              <span>{card.label}</span>
+            </div>
+            <div className="mt-2 text-3xl font-bold leading-none">{card.value}</div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const RequestCard = ({ request, onUpdateStatus, onAddVolunteer, onDelete }) => {
     const { id, type, status, contactPerson, contactPhone, address, description, createdAt } = request;
     const [updating, setUpdating] = useState(false);
+    const [deleting, setDeleting] = useState(false);
     const [actionError, setActionError] = useState('');
+    const volunteerCount = Array.isArray(request.volunteers) ? request.volunteers.length : 0;
+    const latestVolunteer = volunteerCount ? request.volunteers[volunteerCount - 1] : null;
     const statusColors = {
       [RequestStatus.NEW]:'bg-blue-100 text-blue-800',
-      [RequestStatus.IN_PROGRESS]:'bg-yellow-100 text-yellow-800',
-      [RequestStatus.COMPLETED]:'bg-green-100 text-green-800',
+      [RequestStatus.IN_PROGRESS]:'bg-amber-100 text-amber-800',
+      [RequestStatus.COMPLETED]:'bg-emerald-100 text-emerald-800',
     };
+    const statusActionText = {
+      [RequestStatus.NEW]:'標記為已前往',
+      [RequestStatus.IN_PROGRESS]:'標記為已完成'
+    };
+
     const handleStatusChange = (nextStatus) => {
       if (!onUpdateStatus) return;
       const result = onUpdateStatus(id, nextStatus);
@@ -966,67 +1013,135 @@
         }).finally(()=>setUpdating(false));
       }
     };
+
+    const handleDelete = () => {
+      if (!onDelete) return;
+      if (!window.confirm('確定要刪除此需求？此操作無法復原。')) return;
+      const result = onDelete(id);
+      if (result && typeof result.then === 'function') {
+        setDeleting(true);
+        setActionError('');
+        result.catch(err => {
+          console.error('delete request failed', err);
+          setActionError(typeof err?.message === 'string' ? err.message : '刪除失敗，請稍後再試');
+        }).finally(()=>setDeleting(false));
+      }
+    };
+
     return (
-      <div className={`bg白 rounded-lg shadow-md overflow-hidden border-l-4 ${type===RequestType.VOLUNTEER?'border-sky-500':'border-amber-500'}`}>
-        <div className="p-5">
-          <div className="flex justify-between items-start">
-            <h3 className="text-lg font-bold">{type}</h3>
-            <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${statusColors[status]}`}>{status}</span>
+      <div className={`bg-white rounded-xl shadow-sm overflow-hidden border border-slate-200 flex flex-col`}> 
+        <div className="p-5 space-y-4 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="inline-flex items-center px-2.5 py-1 rounded-md bg-slate-100 text-xs font-semibold text-slate-700 tracking-wide uppercase">{type}</span>
+                <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${statusColors[status]}`}>{status}</span>
+                <span className="text-xs text-slate-400">建立於 {new Date(createdAt).toLocaleString('zh-TW')}</span>
+              </div>
+              <p className="text-slate-700 whitespace-pre-wrap text-sm leading-relaxed">{description}</p>
+            </div>
+            <button onClick={handleDelete} disabled={deleting}
+              className="text-sm font-semibold text-red-600 hover:text-red-700 disabled:text-red-300">
+              {deleting ? '刪除中…' : '刪除任務'}
+            </button>
           </div>
-          <p className="mt-3 text-slate-700 whitespace-pre-wrap">{description}</p>
-          <div className="mt-4 border-t border-slate-200 pt-4 space-y-2 text-sm text-slate-600">
-            <div>👤 {contactPerson}</div>
-            <div>📞 {contactPhone}</div>
-            <div className="flex items-center justify-between">
-              <div>📍 {address}</div>
-              {request.location?.lat && request.location?.lng && (
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm text-slate-600 bg-slate-50 rounded-lg border border-slate-200 p-3">
+            <div className="flex items-center gap-2"><span className="font-semibold text-slate-700">👤 聯絡人</span><span>{contactPerson}</span></div>
+            <div className="flex items-center gap-2 break-all"><span className="font-semibold text-slate-700">📞 聯絡電話</span><span>{contactPhone}</span></div>
+            <div className="sm:col-span-2 flex items-start gap-2">
+              <span className="font-semibold text-slate-700">📍 位置</span>
+              <span className="flex-1 break-words">{address}</span>
+            </div>
+            {request.location?.lat && request.location?.lng && (
+              <div className="sm:col-span-2 flex justify-end">
                 <a href={`https://www.google.com/maps/dir/?api=1&destination=${request.location.lat},${request.location.lng}`}
                    target="_blank" rel="noopener noreferrer"
-                   className="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700">🧭 導航</a>
-              )}
-            </div>
-            <div className="text-xs text-slate-500">發佈於: {new Date(createdAt).toLocaleString('zh-TW')}</div>
+                   className="text-xs bg-green-600 text-white px-3 py-1.5 rounded-md hover:bg-green-700">🧭 地圖導航</a>
+              </div>
+            )}
           </div>
-          {actionError && <p className="mt-3 text-sm text-red-500">{actionError}</p>}
-          {status !== RequestStatus.COMPLETED && (
-            <div className="mt-5 pt-4 border-t border-slate-200 flex space-x-2">
-              {status === RequestStatus.NEW && (
-                <button onClick={()=>handleStatusChange(RequestStatus.IN_PROGRESS)} disabled={updating} className="w-full text-center px-4 py-2 bg-yellow-500 text-white font-semibold rounded-md hover:bg-yellow-600 disabled:bg-yellow-300">{updating?'更新中...':'我來處理'}</button>
-              )}
-              {status === RequestStatus.IN_PROGRESS && (
-                <button onClick={()=>handleStatusChange(RequestStatus.COMPLETED)} disabled={updating} className="w-full text-center px-4 py-2 bg-green-500 text-white font-semibold rounded-md hover:bg-green-600 disabled:bg-green-300">{updating?'更新中...':'標示為已完成'}</button>
-              )}
-            </div>
-          )}
-          {type === RequestType.VOLUNTEER && status !== RequestStatus.COMPLETED && (
-            <div className="mt-5">
-              <h4 className="text-sm font-semibold text-slate-800">志工報名</h4>
-              <VolunteerSignup onSubmit={(vol)=> onAddVolunteer ? onAddVolunteer(id, vol) : Promise.resolve()} />
-              {Array.isArray(request.volunteers) && request.volunteers.length>0 && (
-                <div className="mt-3 text-sm text-slate-700">
-                  <p className="font-medium">已報名（{request.volunteers.length}）</p>
-                  <ul className="mt-1 space-y-1">{request.volunteers.map((v,i)=>(<li key={i} className="text-xs"><span className="px-2 py-0.5 rounded bg-slate-100 mr-2">{v.name}</span>{v.phone}{v.note?`（${v.note}）`:''}</li>))}</ul>
+
+          <div className="border border-indigo-100 rounded-lg p-3 bg-indigo-50/40">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-indigo-700 font-semibold">
+                <span>👥 前往志工</span>
+                <span className="text-2xl">{volunteerCount}</span>
+              </div>
+              {latestVolunteer ? (
+                <div className="text-xs text-slate-500 text-right leading-relaxed">
+                  <div>最新前往：{latestVolunteer.name}</div>
+                  <div className="break-all">{latestVolunteer.phone}</div>
+                  {latestVolunteer.note ? <div className="italic text-slate-400">{latestVolunteer.note}</div> : null}
                 </div>
+              ) : (
+                <div className="text-xs text-slate-400">尚無志工報名</div>
               )}
             </div>
+            {Array.isArray(request.volunteers) && request.volunteers.length>0 && (
+              <ul className="mt-3 space-y-1 max-h-28 overflow-auto pr-1 text-xs text-slate-600">
+                {request.volunteers.map((v,i)=>(
+                  <li key={i} className="flex items-start justify-between gap-3 bg-white/60 rounded px-2 py-1">
+                    <span className="font-medium text-slate-700">{v.name}</span>
+                    <span className="flex-1 text-right break-all">
+                      {v.phone}{v.note?`｜${v.note}`:''}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {type === RequestType.VOLUNTEER && status !== RequestStatus.COMPLETED && (
+              <div className="mt-3">
+                <h4 className="text-xs font-semibold text-slate-600 mb-1">新增前往志工</h4>
+                <VolunteerSignup onSubmit={(vol)=> onAddVolunteer ? onAddVolunteer(id, vol) : Promise.resolve()} />
+              </div>
+            )}
+          </div>
+
+          {actionError && <p className="text-sm text-red-500">{actionError}</p>}
+        </div>
+
+        <div className="px-5 py-4 bg-slate-100 border-t border-slate-200 flex flex-wrap gap-3 justify-end">
+          {status !== RequestStatus.COMPLETED && (
+            <button
+              onClick={()=>handleStatusChange(status === RequestStatus.NEW ? RequestStatus.IN_PROGRESS : RequestStatus.COMPLETED)}
+              disabled={updating}
+              className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:bg-indigo-300">
+              {updating ? '更新中…' : (statusActionText[status] || '更新狀態')}
+            </button>
           )}
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className="px-4 py-2 text-sm font-semibold text-red-600 bg-white border border-red-200 rounded-md hover:bg-red-50 disabled:text-red-300 disabled:border-red-100">
+            {deleting ? '刪除中…' : '刪除任務'}
+          </button>
         </div>
       </div>
     );
   };
 
-  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, activeFilter }) => {
+  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, onDelete, activeFilter }) => {
     const filtered = requests.filter(r => activeFilter==='全部' ? true : r.type===activeFilter);
     const order = {[RequestStatus.NEW]:1,[RequestStatus.IN_PROGRESS]:2,[RequestStatus.COMPLETED]:3};
     const sorted = filtered.sort((a,b)=> a.status===b.status ? new Date(b.createdAt)-new Date(a.createdAt) : order[a.status]-order[b.status]);
     return (
-      <div className="py-8 ui-over">
+      <div className="py-8 ui-over space-y-6">
+        <RequestStatusSummary requests={requests} />
         {sorted.length ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {sorted.map(r=>(<RequestCard key={r.id} request={r} onUpdateStatus={onUpdateStatus} onAddVolunteer={onAddVolunteer} />))}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+            {sorted.map(r=>(
+              <RequestCard
+                key={r.id}
+                request={r}
+                onUpdateStatus={onUpdateStatus}
+                onAddVolunteer={onAddVolunteer}
+                onDelete={onDelete}
+              />
+            ))}
           </div>
         ) : (
-          <div className="text-center py-12">
+          <div className="text-center py-12 bg-white border border-dashed border-slate-300 rounded-lg">
             <div className="mx-auto h-12 w-12 text-gray-400">ℹ️</div>
             <h3 className="mt-2 text-lg font-medium">目前沒有需求</h3>
             <p className="mt-1 text-sm text-gray-500">點擊「登記災情需求」來新增第一筆資料。</p>
@@ -1215,6 +1330,17 @@
       }
     }, []);
 
+    const deleteRequest = useCallback(async (id)=>{
+      try {
+        const res = await fetch(`/api/requests/${id}`, { method: 'DELETE' });
+        await parseJSONResponse(res, '刪除需求失敗');
+        setRequests(prev => prev.filter(r => r.id !== id));
+      } catch (err) {
+        console.error('delete request failed', err);
+        throw err;
+      }
+    }, []);
+
     const filters = ['全部', RequestType.VOLUNTEER, RequestType.SUPPLY];
 
     return (
@@ -1222,34 +1348,57 @@
         <EmergencyTicker/>
         <Header/>
         <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <WeatherAlert/>
-          <LeafletMapPanel requests={requests}/>
-          <div className="flex flex-col sm:flex-row justify-between items-center mb-6 gap-4 ui-over">
-            <div className="w-full sm:w-auto">
-              <div className="flex bg-slate-200 rounded-lg p-1">
-                {filters.map(f=>(
-                  <button key={f} onClick={()=>setActiveFilter(f)}
-                    className={`w-full sm:w-auto px-4 py-2 text-sm font-semibold rounded-md ${activeFilter===f ? 'bg白 text-indigo-700 shadow' : 'text-slate-600 hover:bg-slate-300'}`}>
-                    {f}
-                  </button>
-                ))}
+          <div className="space-y-6">
+            <WeatherAlert/>
+
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 ui-over">
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex bg-slate-200 rounded-lg p-1">
+                    {filters.map(f=>(
+                      <button
+                        key={f}
+                        onClick={()=>setActiveFilter(f)}
+                        className={`w-full sm:w-auto px-4 py-2 text-sm font-semibold rounded-md ${activeFilter===f ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-slate-300'}`}
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="hidden lg:block text-xs text-slate-400">
+                    依照需求類型與完成狀態自動排序，最近更新的任務會在前方顯示。
+                  </div>
+                </div>
+                <button
+                  onClick={()=>setIsFormOpen(true)}
+                  className="w-full lg:w-auto px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 flex items-center justify-center"
+                >
+                  <span className="mr-2">➕</span>📍 登記災情需求
+                </button>
               </div>
             </div>
-            <button onClick={()=>setIsFormOpen(true)} className="w-full sm:w-auto px-5 py-2.5 bg-indigo-600 text白 font-semibold rounded-lg shadow-md hover:bg-indigo-700 flex items-center justify-center">
-              <span className="mr-2">➕</span>📍 登記災情需求
-            </button>
+
+            {requestError && (
+              <div className="w-full text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <span>{requestError}</span>
+                <button onClick={()=>fetchRequests()} className="inline-flex items-center justify-center px-3 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700">重新嘗試</button>
+              </div>
+            )}
+
+            {loadingRequests ? (
+              <div className="py-12 text-center text-sm text-slate-500 bg-white rounded-xl border border-slate-200">需求列表載入中…</div>
+            ) : (
+              <RequestDashboard
+                requests={requests}
+                onUpdateStatus={updateStatus}
+                onAddVolunteer={addVolunteer}
+                onDelete={deleteRequest}
+                activeFilter={activeFilter}
+              />
+            )}
+
+            <LeafletMapPanel requests={requests}/>
           </div>
-          {requestError && (
-            <div className="w-full mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <span>{requestError}</span>
-              <button onClick={()=>fetchRequests()} className="inline-flex items-center justify-center px-3 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700">重新嘗試</button>
-            </div>
-          )}
-          {loadingRequests ? (
-            <div className="py-12 text-center text-sm text-slate-500">需求列表載入中…</div>
-          ) : (
-            <RequestDashboard requests={requests} onUpdateStatus={updateStatus} onAddVolunteer={addVolunteer} activeFilter={activeFilter}/>
-          )}
         </main>
         <RequestForm isOpen={isFormOpen} onClose={()=>setIsFormOpen(false)} onSubmit={addRequest}/>
       </div>
