@@ -1,6 +1,6 @@
 // server/index.js (CommonJS 版)
 // 需要配合根目錄 package.json 的 "start": "node server/index.js"
-// 並在 Render 以 render.yaml 綁定 DATABASE_URL（Postgres）
+// 並在 Render 的 Web Service 環境變數設定 DATABASE_URL（Postgres）
 
 const express = require('express');
 const cors = require('cors');
@@ -18,16 +18,13 @@ const port = process.env.PORT || 5001;
 app.use(cors());
 app.use(express.json());
 
-// 靜態資源（讓 simple.html 與前端資源可直接被服務）
-app.use(express.static('.', {
-  setHeaders: (res, filePath) => {
-    if (filePath.endsWith('.jsx')) {
-      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-    }
-  }
-}));
-
+// 健康檢查
 app.get('/health', (_, res) => res.send('ok'));
+
+// （新增）根路由導到 simple.html，方便直接開站
+app.get('/', (req, res) => {
+  res.redirect('/simple.html');
+});
 
 // ---------------------- Postgres 設定 ----------------------
 const pool = new Pool({
@@ -65,179 +62,9 @@ async function initDb() {
 
 initDb().catch(err => console.error('DB init error', err));
 
-// ---------------------- 共用工具 ----------------------
-const uuid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+// ---------------------- JSX/JS 轉譯路由（放在 static *之前*！） ----------------------
+// 讓 .jsx / 含 JSX 的 .js 先被攔截做即時轉譯，再交給瀏覽器以 ESM 載入。
 
-const serializeRequestRow = (row, volunteers = []) => ({
-  id: row.id,
-  type: row.type,
-  contactPerson: row.contact_person,
-  contactPhone: row.contact_phone,
-  address: row.address,
-  description: row.description,
-  status: row.status,
-  createdAt: row.created_at,
-  location: (row.location_lat != null && row.location_lng != null)
-    ? { lat: row.location_lat, lng: row.location_lng }
-    : null,
-  volunteers: volunteers.map(v => ({
-    name: v.name,
-    phone: v.phone,
-    note: v.note || '',
-    createdAt: v.created_at
-  }))
-});
-
-// ---------------------- Requests / Volunteers API ----------------------
-
-// 取得所有 requests（含 volunteers）
-app.get('/api/requests', async (req, res) => {
-  try {
-    const { rows } = await pool.query('SELECT * FROM requests ORDER BY created_at DESC');
-    const { rows: vrows } = await pool.query(
-      'SELECT request_id, name, phone, note, created_at FROM volunteers ORDER BY created_at ASC'
-    );
-    const bucket = new Map();
-    for (const v of vrows) {
-      if (!bucket.has(v.request_id)) bucket.set(v.request_id, []);
-      bucket.get(v.request_id).push(v);
-    }
-    res.json(rows.map(r => serializeRequestRow(r, bucket.get(r.id) || [])));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: '伺服器錯誤' });
-  }
-});
-
-// 建立一筆 request
-app.post('/api/requests', async (req, res) => {
-  try {
-    const { type, contactPerson, contactPhone, address, description, location } = req.body || {};
-    if (!type || !contactPerson || !contactPhone || !address || !description) {
-      return res.status(400).json({ error: '缺少必要欄位' });
-    }
-    const id = uuid();
-    const createdAt = new Date().toISOString();
-    const status = '新登記';
-
-    await pool.query(
-      `INSERT INTO requests
-       (id, type, contact_person, contact_phone, address, description, status, location_lat, location_lng, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [
-        id, type, contactPerson, contactPhone, address, description, status,
-        location?.lat ?? null, location?.lng ?? null, createdAt
-      ]
-    );
-
-    const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
-    res.status(201).json(serializeRequestRow(rows[0], []));
-  } catch (err) {
-    console.error('Create request error', err);
-    res.status(500).json({ error: '伺服器錯誤' });
-  }
-});
-
-// 更新狀態
-app.patch('/api/requests/:id/status', async (req, res) => {
-  try {
-    const id = req.params.id;
-    const { status } = req.body || {};
-    if (!status) return res.status(400).json({ error: '缺少 status' });
-
-    const cur = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
-    if (cur.rowCount === 0) return res.status(404).json({ error: '找不到資料' });
-
-    await pool.query('UPDATE requests SET status = $1 WHERE id = $2', [status, id]);
-
-    const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
-    const { rows: vrows } = await pool.query(
-      'SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',
-      [id]
-    );
-    res.json(serializeRequestRow(rows[0], vrows));
-  } catch (err) {
-    console.error('Update status error', err);
-    res.status(500).json({ error: '伺服器錯誤' });
-  }
-});
-
-// 新增志工
-app.post('/api/requests/:id/volunteers', async (req, res) => {
-  try {
-    const id = req.params.id;
-    const { name, phone, note } = req.body || {};
-    if (!name || !phone) return res.status(400).json({ error: '缺少志工姓名或電話' });
-
-    const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
-    if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
-
-    await pool.query(
-      'INSERT INTO volunteers (request_id, name, phone, note, created_at) VALUES ($1,$2,$3,$4,$5)',
-      [id, name, phone, note || null, new Date().toISOString()]
-    );
-
-    const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
-    const { rows: vrows } = await pool.query(
-      'SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',
-      [id]
-    );
-    res.status(201).json(serializeRequestRow(rows[0], vrows));
-  } catch (err) {
-    console.error('Add volunteer error', err);
-    res.status(500).json({ error: '伺服器錯誤' });
-  }
-});
-
-// ---------------------- 外部資料 Proxy / Aggregator ----------------------
-
-// 水利署即時水位（避免前端 CORS）
-const WRA_REALTIME_ENDPOINT = 'https://opendata.wra.gov.tw/WraApi/v1/Water/RealTimeWaterLevel';
-app.get('/api/proxy/wra/realtime-water-level', async (req, res) => {
-  try {
-    const url = new URL(WRA_REALTIME_ENDPOINT);
-    url.searchParams.set('$format', 'JSON');
-    for (const [key, value] of Object.entries(req.query)) {
-      if (value != null) url.searchParams.set(key, value);
-    }
-    const upstream = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
-    if (!upstream.ok) {
-      const detail = await upstream.text();
-      return res.status(upstream.status).json({ error: '水利署資料取得失敗', detail: detail.slice(0, 1024) });
-    }
-    const payload = await upstream.json();
-    res.setHeader('Cache-Control', 'public, max-age=60');
-    return res.json(payload);
-  } catch (err) {
-    console.error('WRA proxy error', err);
-    return res.status(502).json({ error: '無法取得水利署資料' });
-  }
-});
-
-// 堰塞湖監測資料（模擬結構）
-app.get('/api/qlake', async (req, res) => {
-  try {
-    const mockData = {
-      name: '馬太鞍溪堰塞湖',
-      waterLevel: 168.39 + Math.random() * 0.5,
-      warningLevel: 169.5,
-      alertLevel: 170.0,
-      status: Math.random() > 0.8 ? 'warning' : 'normal',
-      lastUpdate: new Date().toLocaleString('zh-TW'),
-      rainfall: Math.floor(Math.random() * 5),
-      evacuationZones: [
-        { name: '光復市區', distance: '2.1km', risk: 'medium' },
-        { name: '大富村', distance: '1.8km', risk: 'high' },
-        { name: '大進村', distance: '3.2km', risk: 'low' }
-      ]
-    };
-    res.json(mockData);
-  } catch (e) {
-    res.status(500).json({ error: 'Failed to fetch qlake data' });
-  }
-});
-
-// JSX/JS 即時轉譯（讓 .jsx / 含 JSX 的 .js 直接在瀏覽器跑 ESM）
 app.get('*.jsx', async (req, res, next) => {
   try {
     const abs = path.join(process.cwd(), req.path);
@@ -282,6 +109,185 @@ app.get('*.js', async (req, res, next) => {
   } catch (e) {
     console.error('JS transform error:', e);
     return next();
+  }
+});
+
+// ---------------------- 靜態資源 ----------------------
+// 放在 JSX/JS 轉譯路由之後，避免 .jsx 先被 static 送出而沒轉譯。
+app.use(express.static('.', {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.jsx')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    }
+    // 可以加上基本快取（靜態檔 10 分鐘）
+    if (/\.(css|js|jsx|png|jpg|svg|html)$/.test(filePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=600');
+    }
+  }
+}));
+
+// ---------------------- 共用工具 ----------------------
+const uuid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+const serializeRequestRow = (row, volunteers = []) => ({
+  id: row.id,
+  type: row.type,
+  contactPerson: row.contact_person,
+  contactPhone: row.contact_phone,
+  address: row.address,
+  description: row.description,
+  status: row.status,
+  createdAt: row.created_at,
+  location: (row.location_lat != null && row.location_lng != null)
+    ? { lat: row.location_lat, lng: row.location_lng }
+    : null,
+  volunteers: volunteers.map(v => ({
+    name: v.name,
+    phone: v.phone,
+    note: v.note || '',
+    createdAt: v.created_at
+  }))
+});
+
+// ---------------------- Requests / Volunteers API ----------------------
+app.get('/api/requests', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM requests ORDER BY created_at DESC');
+    const { rows: vrows } = await pool.query(
+      'SELECT request_id, name, phone, note, created_at FROM volunteers ORDER BY created_at ASC'
+    );
+    const bucket = new Map();
+    for (const v of vrows) {
+      if (!bucket.has(v.request_id)) bucket.set(v.request_id, []);
+      bucket.get(v.request_id).push(v);
+    }
+    res.json(rows.map(r => serializeRequestRow(r, bucket.get(r.id) || [])));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: '伺服器錯誤' });
+  }
+});
+
+app.post('/api/requests', async (req, res) => {
+  try {
+    const { type, contactPerson, contactPhone, address, description, location } = req.body || {};
+    if (!type || !contactPerson || !contactPhone || !address || !description) {
+      return res.status(400).json({ error: '缺少必要欄位' });
+    }
+    const id = uuid();
+    const createdAt = new Date().toISOString();
+    const status = '新登記';
+
+    await pool.query(
+      `INSERT INTO requests
+       (id, type, contact_person, contact_phone, address, description, status, location_lat, location_lng, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        id, type, contactPerson, contactPhone, address, description, status,
+        location?.lat ?? null, location?.lng ?? null, createdAt
+      ]
+    );
+
+    const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
+    res.status(201).json(serializeRequestRow(rows[0], []));
+  } catch (err) {
+    console.error('Create request error', err);
+    res.status(500).json({ error: '伺服器錯誤' });
+  }
+});
+
+app.patch('/api/requests/:id/status', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { status } = req.body || {};
+    if (!status) return res.status(400).json({ error: '缺少 status' });
+
+    const cur = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
+    if (cur.rowCount === 0) return res.status(404).json({ error: '找不到資料' });
+
+    await pool.query('UPDATE requests SET status = $1 WHERE id = $2', [status, id]);
+
+    const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
+    const { rows: vrows } = await pool.query(
+      'SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',
+      [id]
+    );
+    res.json(serializeRequestRow(rows[0], vrows));
+  } catch (err) {
+    console.error('Update status error', err);
+    res.status(500).json({ error: '伺服器錯誤' });
+  }
+});
+
+app.post('/api/requests/:id/volunteers', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { name, phone, note } = req.body || {};
+    if (!name || !phone) return res.status(400).json({ error: '缺少志工姓名或電話' });
+
+    const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
+    if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
+
+    await pool.query(
+      'INSERT INTO volunteers (request_id, name, phone, note, created_at) VALUES ($1,$2,$3,$4,$5)',
+      [id, name, phone, note || null, new Date().toISOString()]
+    );
+
+    const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
+    const { rows: vrows } = await pool.query(
+      'SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',
+      [id]
+    );
+    res.status(201).json(serializeRequestRow(rows[0], vrows));
+  } catch (err) {
+    console.error('Add volunteer error', err);
+    res.status(500).json({ error: '伺服器錯誤' });
+  }
+});
+
+// ---------------------- 外部資料 Proxy / Aggregator ----------------------
+const WRA_REALTIME_ENDPOINT = 'https://opendata.wra.gov.tw/WraApi/v1/Water/RealTimeWaterLevel';
+app.get('/api/proxy/wra/realtime-water-level', async (req, res) => {
+  try {
+    const url = new URL(WRA_REALTIME_ENDPOINT);
+    url.searchParams.set('$format', 'JSON');
+    for (const [key, value] of Object.entries(req.query)) {
+      if (value != null) url.searchParams.set(key, value);
+    }
+    const upstream = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+    if (!upstream.ok) {
+      const detail = await upstream.text();
+      return res.status(upstream.status).json({ error: '水利署資料取得失敗', detail: detail.slice(0, 1024) });
+    }
+    const payload = await upstream.json();
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    return res.json(payload);
+  } catch (err) {
+    console.error('WRA proxy error', err);
+    return res.status(502).json({ error: '無法取得水利署資料' });
+  }
+});
+
+// 堰塞湖監測資料（模擬結構）
+app.get('/api/qlake', async (req, res) => {
+  try {
+    const mockData = {
+      name: '馬太鞍溪堰塞湖',
+      waterLevel: 168.39 + Math.random() * 0.5,
+      warningLevel: 169.5,
+      alertLevel: 170.0,
+      status: Math.random() > 0.8 ? 'warning' : 'normal',
+      lastUpdate: new Date().toLocaleString('zh-TW'),
+      rainfall: Math.floor(Math.random() * 5),
+      evacuationZones: [
+        { name: '光復市區', distance: '2.1km', risk: 'medium' },
+        { name: '大富村', distance: '1.8km', risk: 'high' },
+        { name: '大進村', distance: '3.2km', risk: 'low' }
+      ]
+    };
+    res.json(mockData);
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch qlake data' });
   }
 });
 
