@@ -1480,7 +1480,7 @@
         <Header/>
         <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <div className="space-y-6">
-            <WeatherAlert/>
+            
 
             {/* 外部任務顯示 - 高可見度橫幅 */}
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 ui-over flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -1559,6 +1559,8 @@
             )}
 
             <LeafletMapPanel requests={requests}/>
+            {/* 將即時氣象移到頁面底部，避免擋到表單 */}
+            <WeatherAlert/>
           </div>
         </main>
         <RequestForm isOpen={isFormOpen} onClose={()=>setIsFormOpen(false)} onSubmit={addRequest}/>
