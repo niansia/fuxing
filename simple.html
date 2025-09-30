@@ -40,13 +40,14 @@
   const RequestType = { VOLUNTEER: '志工人力', SUPPLY: '物資需求' };
   const RequestStatus = { NEW:'新登記', IN_PROGRESS:'已前往', COMPLETED:'已完成' };
   const uuid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const FeedbackStatus = { PENDING:'未處理', DOING:'處理中', DONE:'已完成' };
 
   const CENTER = { lat: 23.6697, lon: 121.4235 };
   const WAQI_TOKEN = 'demo';
   const MYMAPS_MID = '1qOHK91tv68NacIN1GVTDYKn10ojb-t8';
   const KML_URL = `https://www.google.com/maps/d/kml?mid=${MYMAPS_MID}&forcekml=1`;
   const KML_FALLBACK = `https://www.google.com/maps/d/kml?mid=${MYMAPS_MID}&forcekml=1`;
-  const SHOVEL_JSON = 'https://shovel-heroes.com/Map/data.json';
+  const SHOVEL_JSON = '/api/proxy/shovel';
   const GOV_POINTS_URL = 'https://tainan.olc.tw/p/guangfu250923/data/government_points.json';
   const WRA_LEVEL_API = '/api/proxy/wra/realtime-water-level';
   const GEO_CACHE_KEY = 'gf_geo_cache_v4';
@@ -227,6 +228,7 @@
             {EXTERNAL_LINKS.map(l=>(
               <a key={l.url} href={l.url} target="_blank" rel="noopener" className="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700">{l.name}</a>
             ))}
+            <button id="open-feedback" className="text-xs px-2 py-1 rounded bg-purple-600 text-white hover:bg-purple-700">💬 網站意見</button>
           </div>
         </div>
       </div>
@@ -389,6 +391,28 @@
               width="100%" height="90%" style={{ border: 0 }}
               allowFullScreen loading="lazy"></iframe>
             <div className="mt-2 text-xs text-gray-500 text-center">包含交通管制、物資、醫療、供水…等圖層</div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // 其他網站任務（Shovel）視窗
+  const ShovelModal = ({ isOpen, onClose }) => {
+    if (!isOpen) return null;
+    return (
+      <div className="fixed inset-0 bg-black/50 modal-z flex items-center justify-center p-4">
+        <div className="bg-white rounded-lg w-full max-w-6xl h-5/6 relative">
+          <div className="flex items-center justify-between p-4 border-b">
+            <h3 className="text-lg font-bold">其他網站救災任務（Shovel Heroes）</h3>
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-xl">✕</button>
+          </div>
+          <div className="p-3 text-xs text-slate-600">此為外部社群維護之任務列表，內容由該站維護。若無法嵌入顯示，請改用下方按鈕在新分頁開啟。</div>
+          <div className="h-full p-4">
+            <iframe src="https://shovel-heroes.com/" title="Shovel Heroes" width="100%" height="90%" style={{border:0}} allowFullScreen loading="lazy"></iframe>
+            <div className="mt-2 text-xs text-gray-500 text-center">
+              <a className="text-blue-600 underline" href="https://shovel-heroes.com/" target="_blank" rel="noopener">在新分頁開啟 shovel-heroes.com</a>
+            </div>
           </div>
         </div>
       </div>
@@ -581,10 +605,18 @@
 
       // Shovel
       try {
-        const r = await fetch(SHOVEL_JSON);
-        const ct = r.headers.get('content-type')||'';
-        if (r.ok && ct.includes('application/json')) {
-          const arr = await r.json();
+        // 先走後端 proxy，避免 CORS；失敗再嘗試直連
+        let r = await fetch(SHOVEL_JSON);
+        if (!r.ok) r = await fetch('https://shovel-heroes.com/Map/data.json');
+        let arr = [];
+        if (r.ok) {
+          try {
+            arr = await r.json();
+          } catch {
+            // 某些伺服器以 text/plain 回傳，改用文字轉 JSON
+            const txt = await r.text();
+            try { arr = JSON.parse(txt); } catch {}
+          }
           (Array.isArray(arr)?arr:[]).forEach(s=>{
             const {lat,lng,title,note,type} = s;
             if (typeof lat!=='number' || typeof lng!=='number') return;
@@ -1053,6 +1085,14 @@
               <span className="font-semibold text-slate-700">📍 位置</span>
               <span className="flex-1 break-words">{address}</span>
             </div>
+            {request.photo && (
+              <div className="sm:col-span-2">
+                <div className="text-xs font-semibold text-slate-700 mb-1">📷 現場照片</div>
+                <a href={request.photo} target="_blank" rel="noopener">
+                  <img src={request.photo} alt="現場照片" className="max-h-48 rounded border"/>
+                </a>
+              </div>
+            )}
             {request.location?.lat && request.location?.lng && (
               <div className="sm:col-span-2 flex justify-end">
                 <a href={`https://www.google.com/maps/dir/?api=1&destination=${request.location.lat},${request.location.lng}`}
@@ -1157,6 +1197,7 @@
     const [contactPhone, setContactPhone] = useState('');
     const [address, setAddress] = useState('');
     const [description, setDescription] = useState('');
+    const [photo, setPhoto] = useState(null);
     const [error, setError] = useState('');
     const [location, setLocation] = useState(null);
     const [gettingLocation, setGettingLocation] = useState(false);
@@ -1183,20 +1224,47 @@
       e.preventDefault();
       if (!contactPerson || !contactPhone || !address || !description) { setError('所有欄位皆為必填項目。'); return; }
       setError('');
-      const payload = { type, contactPerson, contactPhone, address, description, location: location ? {lat:location.lat,lng:location.lng} : null };
+      const payload = { type, contactPerson, contactPhone, address, description, photo, location: location ? {lat:location.lat,lng:location.lng} : null };
       const maybePromise = onSubmit(payload);
       if (maybePromise && typeof maybePromise.then === 'function') {
         setSubmitting(true);
         maybePromise.then(()=>{
-          setContactPerson(''); setContactPhone(''); setAddress(''); setDescription(''); setLocation(null);
+          setContactPerson(''); setContactPhone(''); setAddress(''); setDescription(''); setPhoto(null); setLocation(null);
           onClose();
         }).catch(err => {
           console.error('submit request failed', err);
           setError(typeof err?.message === 'string' ? err.message : '送出失敗，請稍後再試');
         }).finally(()=>setSubmitting(false));
       } else {
-        setContactPerson(''); setContactPhone(''); setAddress(''); setDescription(''); setLocation(null); onClose();
+        setContactPerson(''); setContactPhone(''); setAddress(''); setDescription(''); setPhoto(null); setLocation(null); onClose();
       }
+    };
+
+    // 讀取/壓縮圖片為 dataURL（max 邊 1280, JPEG 品質0.85）
+    const handleFile = async (file) => {
+      if (!file) return setPhoto(null);
+      const img = new Image();
+      const fr = new FileReader();
+      const done = await new Promise((resolve) => {
+        fr.onload = () => { img.src = fr.result; };
+        img.onload = () => resolve();
+        fr.readAsDataURL(file);
+      });
+      const maxSide = 1280;
+      const canvas = document.createElement('canvas');
+      let { width, height } = img;
+      const ratio = Math.min(1, maxSide/Math.max(width,height));
+      width = Math.round(width*ratio); height = Math.round(height*ratio);
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img,0,0,width,height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      if (dataUrl.length > 2_000_000) {
+        setError('圖片過大，請選擇較小的照片或再壓縮');
+        return;
+      }
+      setError('');
+      setPhoto(dataUrl);
     };
 
     return (
@@ -1233,6 +1301,19 @@
                 </div>
 
                 <div>
+                  <label className="block text-sm font-medium text-slate-700 flex items-center justify-between">
+                    <span>現場照片（選填）</span>
+                    <span className="text-[12px] text-slate-500">若需求需大型機具，請上傳現場照片，避免志工白跑一趟。</span>
+                  </label>
+                  <input type="file" accept="image/*" onChange={(e)=>handleFile(e.target.files?.[0])} className="mt-1 block w-full text-sm"/>
+                  {photo && (
+                    <div className="mt-2">
+                      <img src={photo} alt="預覽" className="max-h-40 rounded border"/>
+                    </div>
+                  )}
+                </div>
+
+                <div>
                   <label className="block text-sm font-medium text-slate-700">地址或位置</label>
                   <div className="flex gap-2">
                     <input value={address} onChange={(e)=>setAddress(e.target.value)} className="flex-1 px-3 py-2 bg白 border border-slate-300 rounded-md shadow-sm sm:text-sm" placeholder="請輸入地址或點擊定位" />
@@ -1264,6 +1345,9 @@
   const App = () => {
     const [requests, setRequests] = useState([]);
     const [isFormOpen, setIsFormOpen] = useState(false);
+    const [isShovelOpen, setIsShovelOpen] = useState(false);
+    const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
+    const [feedbackList, setFeedbackList] = useState([]);
     const [activeFilter, setActiveFilter] = useState('全部');
     const [loadingRequests, setLoadingRequests] = useState(true);
     const [requestError, setRequestError] = useState(null);
@@ -1284,6 +1368,15 @@
     }, []);
 
     useEffect(()=>{ fetchRequests(); }, [fetchRequests]);
+
+    // 綁定 Header 的『網站意見』按鈕
+    useEffect(()=>{
+      const btn = document.getElementById('open-feedback');
+      if (!btn) return;
+      const onClick = ()=>{ setIsFeedbackOpen(true); loadFeedback(); };
+      btn.addEventListener('click', onClick);
+      return ()=> btn.removeEventListener('click', onClick);
+    }, []);
 
     const addRequest = useCallback(async (data)=>{
       try {
@@ -1354,6 +1447,33 @@
 
     const filters = ['全部', RequestType.VOLUNTEER, RequestType.SUPPLY];
 
+    // ---- Feedback APIs ----
+    const loadFeedback = useCallback(async ()=>{
+      try {
+        const res = await fetch('/api/feedback');
+        const data = await parseJSONResponse(res, '意見列表載入失敗');
+        setFeedbackList(Array.isArray(data) ? data : []);
+      } catch (e) { console.error(e); }
+    }, []);
+
+    const addFeedback = useCallback(async (payload)=>{
+      const res = await fetch('/api/feedback', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const created = await parseJSONResponse(res, '送出意見失敗');
+      setFeedbackList(prev=>[created, ...prev]);
+    }, []);
+
+    const updateFeedbackStatus = useCallback(async (id, status)=>{
+      const res = await fetch(`/api/feedback/${id}/status`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status}) });
+      const updated = await parseJSONResponse(res, '更新意見狀態失敗');
+      setFeedbackList(prev=> prev.map(f => f.id===id ? updated : f));
+    }, []);
+
+    const deleteFeedback = useCallback(async (id)=>{
+      let res = await fetch(`/api/feedback/${id}`, { method:'DELETE' });
+      await parseJSONResponse(res, '刪除意見失敗');
+      setFeedbackList(prev=> prev.filter(f=>f.id!==id));
+    }, []);
+
     return (
       <div className="min-h-screen bg-slate-50">
         <EmergencyTicker/>
@@ -1361,6 +1481,18 @@
         <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <div className="space-y-6">
             <WeatherAlert/>
+
+            {/* 外部任務顯示 - 高可見度橫幅 */}
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 ui-over flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div className="text-amber-900 text-sm">
+                <div className="font-semibold mb-0.5">其他網站救災任務（Shovel Heroes）</div>
+                <div className="opacity-80">社群平台彙整的任務列表；若需要外部支援或參考，點擊右側按鈕查看。</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={()=>setIsShovelOpen(true)} className="px-4 py-2 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold">🌐 立即查看</button>
+                <a href="https://shovel-heroes.com/" target="_blank" rel="noopener" className="px-4 py-2 rounded-md border border-amber-300 text-amber-900 bg-white text-sm">在新分頁開啟</a>
+              </div>
+            </div>
 
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 ui-over">
               <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
@@ -1386,6 +1518,13 @@
                     className="flex-1 lg:flex-none px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 flex items-center justify-center"
                   >
                     <span className="mr-2">➕</span>📍 登記災情需求
+                  </button>
+                  <button
+                    onClick={()=>setIsShovelOpen(true)}
+                    className="flex-1 lg:flex-none px-5 py-2.5 bg-amber-600 text-white font-semibold rounded-lg shadow-md hover:bg-amber-700 flex items-center justify-center"
+                    title="查看其他網站的救災任務"
+                  >
+                    🌐 其他網站任務
                   </button>
                   <a
                     href="/qr.html?url=https%3A%2F%2Ffuxing.onrender.com%2Fsimple.html"
@@ -1423,11 +1562,77 @@
           </div>
         </main>
         <RequestForm isOpen={isFormOpen} onClose={()=>setIsFormOpen(false)} onSubmit={addRequest}/>
+        <ShovelModal isOpen={isShovelOpen} onClose={()=>setIsShovelOpen(false)} />
+        <FeedbackModal isOpen={isFeedbackOpen} onClose={()=>setIsFeedbackOpen(false)} list={feedbackList} onCreate={addFeedback} onUpdateStatus={updateFeedbackStatus} onDelete={deleteFeedback}/>
       </div>
     );
   };
 
   ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script type="text/babel">
+  // --- 意見面板元件 ---
+  const FeedbackModal = ({ isOpen, onClose, list, onCreate, onUpdateStatus, onDelete }) => {
+    const [name,setName]=React.useState('');
+    const [contact,setContact]=React.useState('');
+    const [message,setMessage]=React.useState('');
+    const [error,setError]=React.useState('');
+    if (!isOpen) return null;
+
+    const submit = (e)=>{
+      e.preventDefault();
+      if (!message.trim()) { setError('請輸入意見內容'); return; }
+      setError('');
+      onCreate({ name, contact, message }).then(()=>{ setName(''); setContact(''); setMessage(''); }).catch(err=>{
+        setError(err?.message || '送出失敗');
+      });
+    };
+
+    const StatusPill = ({v}) => (
+      <span className={`px-2 py-0.5 rounded text-xs ${v==='未處理'?'bg-slate-200 text-slate-700':v==='處理中'?'bg-amber-100 text-amber-800':'bg-emerald-100 text-emerald-800'}`}>{v}</span>
+    );
+
+    return (
+      <div className="fixed inset-0 bg-black/50 modal-z flex justify-center items-center p-4">
+        <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-full overflow-y-auto">
+          <div className="p-4 border-b flex items-center justify-between"><h3 className="text-lg font-bold">💬 網站意見回饋</h3><button onClick={onClose} className="text-slate-500">✕</button></div>
+          <div className="p-4 space-y-4">
+            <form onSubmit={submit} className="space-y-3 bg-slate-50 rounded border p-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div><label className="block text-xs text-slate-600">稱呼（選填）</label><input value={name} onChange={e=>setName(e.target.value)} className="w-full px-3 py-2 border rounded text-sm"/></div>
+                <div><label className="block text-xs text-slate-600">聯絡方式（選填）</label><input value={contact} onChange={e=>setContact(e.target.value)} className="w-full px-3 py-2 border rounded text-sm"/></div>
+                <div className="md:col-span-1 flex items-end"><button type="submit" className="px-4 py-2 bg-purple-600 text-white rounded text-sm w-full md:w-auto">送出意見</button></div>
+              </div>
+              <div><label className="block text-xs text-slate-600">意見內容</label><textarea rows={3} value={message} onChange={e=>setMessage(e.target.value)} className="w-full px-3 py-2 border rounded text-sm"/></div>
+              {error && <p className="text-red-600 text-sm">{error}</p>}
+            </form>
+
+            <div className="text-xs text-slate-500">管理：可將狀態設為「未處理 / 處理中 / 已完成」，也可刪除留言。</div>
+            <div className="space-y-2">
+              {(list||[]).map(item => (
+                <div key={item.id} className="bg-white border rounded p-3 flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium text-slate-800">{item.name || '匿名'}</div>
+                    <div className="flex items-center gap-2">
+                      <StatusPill v={item.status}/>
+                      <button onClick={()=>onDelete(item.id)} className="text-red-600 text-xs">刪除</button>
+                    </div>
+                  </div>
+                  {item.contact && <div className="text-xs text-slate-500">📞 {item.contact}</div>}
+                  <div className="text-sm whitespace-pre-wrap">{item.message}</div>
+                  <div className="flex gap-2 justify-end">
+                    <button onClick={()=>onUpdateStatus(item.id,'未處理')} className="px-2 py-1 text-xs border rounded">未處理</button>
+                    <button onClick={()=>onUpdateStatus(item.id,'處理中')} className="px-2 py-1 text-xs border rounded">處理中</button>
+                    <button onClick={()=>onUpdateStatus(item.id,'已完成')} className="px-2 py-1 text-xs border rounded">已完成</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
   </script>
 </body>
 </html>

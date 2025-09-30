@@ -27,12 +27,32 @@ app.get('/', (req, res) => {
 });
 
 // ---------------------- Postgres 設定 ----------------------
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } // Render PG 需要
-});
+const usePg = !!process.env.DATABASE_URL;
+let pool = null;
+if (usePg) {
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+  });
+}
+
+// 本機 JSON DB（無 DATABASE_URL 時啟用）
+const DB_FILE = path.join(__dirname, 'local-db.json');
+async function loadDB(){
+  try{ const txt = await fs.promises.readFile(DB_FILE,'utf8'); return JSON.parse(txt); }catch{ return { requests:[], volunteers:[], feedback:[] }; }
+}
+async function saveDB(db){ await fs.promises.writeFile(DB_FILE, JSON.stringify(db, null, 2), 'utf8'); }
 
 async function initDb() {
+  if (!usePg) {
+    // 準備本機 JSON 檔
+    const db = await loadDB();
+    if (!db.requests) db.requests = [];
+    if (!db.volunteers) db.volunteers = [];
+    if (!db.feedback) db.feedback = [];
+    await saveDB(db);
+    return;
+  }
   await pool.query(`
     CREATE TABLE IF NOT EXISTS requests (
       id TEXT PRIMARY KEY,
@@ -42,11 +62,15 @@ async function initDb() {
       address TEXT NOT NULL,
       description TEXT NOT NULL,
       status TEXT NOT NULL,
+      photo TEXT,
       location_lat DOUBLE PRECISION,
       location_lng DOUBLE PRECISION,
       created_at TIMESTAMPTZ NOT NULL
     );
   `);
+
+  // 兼容舊資料表，確保 photo 欄位存在
+  await pool.query(`ALTER TABLE requests ADD COLUMN IF NOT EXISTS photo TEXT`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS volunteers (
@@ -55,6 +79,18 @@ async function initDb() {
       name TEXT NOT NULL,
       phone TEXT NOT NULL,
       note TEXT,
+      created_at TIMESTAMPTZ NOT NULL
+    );
+  `);
+
+  // 意見回饋表
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS feedback (
+      id TEXT PRIMARY KEY,
+      name TEXT,
+      contact TEXT,
+      message TEXT NOT NULL,
+      status TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL
     );
   `);
@@ -137,6 +173,7 @@ const serializeRequestRow = (row, volunteers = []) => ({
   address: row.address,
   description: row.description,
   status: row.status,
+  photo: row.photo || null,
   createdAt: row.created_at,
   location: (row.location_lat != null && row.location_lng != null)
     ? { lat: row.location_lat, lng: row.location_lng }
@@ -152,16 +189,20 @@ const serializeRequestRow = (row, volunteers = []) => ({
 // ---------------------- Requests / Volunteers API ----------------------
 app.get('/api/requests', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM requests ORDER BY created_at DESC');
-    const { rows: vrows } = await pool.query(
-      'SELECT request_id, name, phone, note, created_at FROM volunteers ORDER BY created_at ASC'
-    );
-    const bucket = new Map();
-    for (const v of vrows) {
-      if (!bucket.has(v.request_id)) bucket.set(v.request_id, []);
-      bucket.get(v.request_id).push(v);
+    if (usePg) {
+      const { rows } = await pool.query('SELECT * FROM requests ORDER BY created_at DESC');
+      const { rows: vrows } = await pool.query(
+        'SELECT request_id, name, phone, note, created_at FROM volunteers ORDER BY created_at ASC'
+      );
+      const bucket = new Map();
+      for (const v of vrows) { if (!bucket.has(v.request_id)) bucket.set(v.request_id, []); bucket.get(v.request_id).push(v); }
+      return res.json(rows.map(r => serializeRequestRow(r, bucket.get(r.id) || [])));
+    } else {
+      const db = await loadDB();
+      const rows = db.requests.slice().sort((a,b)=> new Date(b.created_at)-new Date(a.created_at));
+      const out = rows.map(r => serializeRequestRow(r, db.volunteers.filter(v=>v.request_id===r.id)));
+      return res.json(out);
     }
-    res.json(rows.map(r => serializeRequestRow(r, bucket.get(r.id) || [])));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: '伺服器錯誤' });
@@ -170,7 +211,7 @@ app.get('/api/requests', async (req, res) => {
 
 app.post('/api/requests', async (req, res) => {
   try {
-    const { type, contactPerson, contactPhone, address, description, location } = req.body || {};
+    const { type, contactPerson, contactPhone, address, description, location, photo } = req.body || {};
     if (!type || !contactPerson || !contactPhone || !address || !description) {
       return res.status(400).json({ error: '缺少必要欄位' });
     }
@@ -179,22 +220,31 @@ app.post('/api/requests', async (req, res) => {
     if (/^[\u4e00-\u9fa5]{2,4}$/.test(safeContactPerson)) {
       safeContactPerson = safeContactPerson.slice(0, 1) + '○';
     }
+    // 簡單檢查圖片（base64 data URL），避免寫入過大
+    let safePhoto = null;
+    if (typeof photo === 'string' && photo.startsWith('data:image/')) {
+      // 限制最大約 1.5MB（字串長度 ~ 2,000,000）
+      if (photo.length <= 2_000_000) safePhoto = photo;
+    }
     const id = uuid();
     const createdAt = new Date().toISOString();
     const status = '新登記';
 
-    await pool.query(
-      `INSERT INTO requests
-       (id, type, contact_person, contact_phone, address, description, status, location_lat, location_lng, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [
-        id, type, safeContactPerson, contactPhone, address, description, status,
-        location?.lat ?? null, location?.lng ?? null, createdAt
-      ]
-    );
-
-    const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
-    res.status(201).json(serializeRequestRow(rows[0], []));
+    if (usePg) {
+      await pool.query(
+        `INSERT INTO requests
+         (id, type, contact_person, contact_phone, address, description, status, photo, location_lat, location_lng, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [ id, type, safeContactPerson, contactPhone, address, description, status, safePhoto, location?.lat ?? null, location?.lng ?? null, createdAt ]
+      );
+      const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
+      return res.status(201).json(serializeRequestRow(rows[0], []));
+    } else {
+      const db = await loadDB();
+      db.requests.push({ id, type, contact_person: safeContactPerson, contact_phone: contactPhone, address, description, status, photo: safePhoto, location_lat: location?.lat ?? null, location_lng: location?.lng ?? null, created_at: createdAt });
+      await saveDB(db);
+      return res.status(201).json(serializeRequestRow(db.requests.find(r=>r.id===id), []));
+    }
   } catch (err) {
     console.error('Create request error', err);
     res.status(500).json({ error: '伺服器錯誤' });
@@ -207,17 +257,22 @@ app.patch('/api/requests/:id/status', async (req, res) => {
     const { status } = req.body || {};
     if (!status) return res.status(400).json({ error: '缺少 status' });
 
-    const cur = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
-    if (cur.rowCount === 0) return res.status(404).json({ error: '找不到資料' });
-
-    await pool.query('UPDATE requests SET status = $1 WHERE id = $2', [status, id]);
-
-    const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
-    const { rows: vrows } = await pool.query(
-      'SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',
-      [id]
-    );
-    res.json(serializeRequestRow(rows[0], vrows));
+    if (usePg) {
+      const cur = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
+      if (cur.rowCount === 0) return res.status(404).json({ error: '找不到資料' });
+      await pool.query('UPDATE requests SET status = $1 WHERE id = $2', [status, id]);
+      const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
+      const { rows: vrows } = await pool.query('SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',[id]);
+      return res.json(serializeRequestRow(rows[0], vrows));
+    } else {
+      const db = await loadDB();
+      const r = db.requests.find(r=>r.id===id);
+      if (!r) return res.status(404).json({ error:'找不到資料' });
+      r.status = status;
+      await saveDB(db);
+      const vols = db.volunteers.filter(v=>v.request_id===id);
+      return res.json(serializeRequestRow(r, vols));
+    }
   } catch (err) {
     console.error('Update status error', err);
     res.status(500).json({ error: '伺服器錯誤' });
@@ -230,20 +285,22 @@ app.post('/api/requests/:id/volunteers', async (req, res) => {
     const { name, phone, note } = req.body || {};
     if (!name || !phone) return res.status(400).json({ error: '缺少志工姓名或電話' });
 
-    const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
-    if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
-
-    await pool.query(
-      'INSERT INTO volunteers (request_id, name, phone, note, created_at) VALUES ($1,$2,$3,$4,$5)',
-      [id, name, phone, note || null, new Date().toISOString()]
-    );
-
-    const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
-    const { rows: vrows } = await pool.query(
-      'SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',
-      [id]
-    );
-    res.status(201).json(serializeRequestRow(rows[0], vrows));
+    if (usePg) {
+      const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
+      if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
+      await pool.query('INSERT INTO volunteers (request_id, name, phone, note, created_at) VALUES ($1,$2,$3,$4,$5)', [id, name, phone, note || null, new Date().toISOString()]);
+      const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
+      const { rows: vrows } = await pool.query('SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',[id]);
+      return res.status(201).json(serializeRequestRow(rows[0], vrows));
+    } else {
+      const db = await loadDB();
+      if (!db.requests.find(r=>r.id===id)) return res.status(404).json({ error:'找不到需求' });
+      db.volunteers.push({ request_id:id, name, phone, note: note||null, created_at: new Date().toISOString() });
+      await saveDB(db);
+      const r = db.requests.find(r=>r.id===id);
+      const vols = db.volunteers.filter(v=>v.request_id===id);
+      return res.status(201).json(serializeRequestRow(r, vols));
+    }
   } catch (err) {
     console.error('Add volunteer error', err);
     res.status(500).json({ error: '伺服器錯誤' });
@@ -253,11 +310,20 @@ app.post('/api/requests/:id/volunteers', async (req, res) => {
 app.delete('/api/requests/:id', async (req, res) => {
   try {
     const id = req.params.id;
-    const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
-    if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
-
-    await pool.query('DELETE FROM requests WHERE id = $1', [id]);
-    res.json({ success: true });
+    if (usePg) {
+      const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
+      if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
+      await pool.query('DELETE FROM requests WHERE id = $1', [id]);
+      return res.json({ success: true });
+    } else {
+      const db = await loadDB();
+      const before = db.requests.length;
+      db.requests = db.requests.filter(r=>r.id!==id);
+      db.volunteers = db.volunteers.filter(v=>v.request_id!==id);
+      if (db.requests.length===before) return res.status(404).json({ error:'找不到需求' });
+      await saveDB(db);
+      return res.json({ success:true });
+    }
   } catch (err) {
     console.error('Delete request error', err);
     res.status(500).json({ error: '伺服器錯誤' });
@@ -268,13 +334,110 @@ app.delete('/api/requests/:id', async (req, res) => {
 app.post('/api/requests/:id/delete', async (req, res) => {
   try {
     const id = req.params.id;
-    const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
-    if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
-
-    await pool.query('DELETE FROM requests WHERE id = $1', [id]);
-    res.json({ success: true });
+    if (usePg) {
+      const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
+      if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
+      await pool.query('DELETE FROM requests WHERE id = $1', [id]);
+      return res.json({ success: true });
+    } else {
+      const db = await loadDB();
+      const before = db.requests.length;
+      db.requests = db.requests.filter(r=>r.id!==id);
+      db.volunteers = db.volunteers.filter(v=>v.request_id!==id);
+      if (db.requests.length===before) return res.status(404).json({ error:'找不到需求' });
+      await saveDB(db);
+      return res.json({ success:true });
+    }
   } catch (err) {
     console.error('Delete request (POST fallback) error', err);
+    res.status(500).json({ error: '伺服器錯誤' });
+  }
+});
+
+// ---------------------- Feedback API ----------------------
+app.get('/api/feedback', async (req, res) => {
+  try {
+    if (usePg) {
+      const { rows } = await pool.query('SELECT * FROM feedback ORDER BY created_at DESC');
+      return res.json(rows);
+    } else {
+      const db = await loadDB();
+      const rows = db.feedback.slice().sort((a,b)=> new Date(b.created_at)-new Date(a.created_at));
+      return res.json(rows);
+    }
+  } catch (err) {
+    console.error('List feedback error', err);
+    res.status(500).json({ error: '伺服器錯誤' });
+  }
+});
+
+app.post('/api/feedback', async (req, res) => {
+  try {
+    const { name, contact, message } = req.body || {};
+    if (!message || String(message).trim() === '') return res.status(400).json({ error: '請輸入意見內容' });
+    const id = uuid();
+    const createdAt = new Date().toISOString();
+    const status = '未處理';
+    if (usePg) {
+      await pool.query('INSERT INTO feedback (id, name, contact, message, status, created_at) VALUES ($1,$2,$3,$4,$5,$6)', [id, name || null, contact || null, message, status, createdAt]);
+      const { rows } = await pool.query('SELECT * FROM feedback WHERE id = $1', [id]);
+      return res.status(201).json(rows[0]);
+    } else {
+      const db = await loadDB();
+      const row = { id, name: name||null, contact: contact||null, message, status, created_at: createdAt };
+      db.feedback.unshift(row);
+      await saveDB(db);
+      return res.status(201).json(row);
+    }
+  } catch (err) {
+    console.error('Create feedback error', err);
+    res.status(500).json({ error: '伺服器錯誤' });
+  }
+});
+
+app.patch('/api/feedback/:id/status', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { status } = req.body || {};
+    if (!status) return res.status(400).json({ error: '缺少 status' });
+    if (usePg) {
+      const cur = await pool.query('SELECT id FROM feedback WHERE id = $1', [id]);
+      if (cur.rowCount === 0) return res.status(404).json({ error: '找不到資料' });
+      await pool.query('UPDATE feedback SET status = $1 WHERE id = $2', [status, id]);
+      const { rows } = await pool.query('SELECT * FROM feedback WHERE id = $1', [id]);
+      return res.json(rows[0]);
+    } else {
+      const db = await loadDB();
+      const row = db.feedback.find(f=>f.id===id);
+      if (!row) return res.status(404).json({ error:'找不到資料' });
+      row.status = status;
+      await saveDB(db);
+      return res.json(row);
+    }
+  } catch (err) {
+    console.error('Update feedback status error', err);
+    res.status(500).json({ error: '伺服器錯誤' });
+  }
+});
+
+app.delete('/api/feedback/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (usePg) {
+      const cur = await pool.query('SELECT id FROM feedback WHERE id = $1', [id]);
+      if (cur.rowCount === 0) return res.status(404).json({ error: '找不到資料' });
+      await pool.query('DELETE FROM feedback WHERE id = $1', [id]);
+      return res.json({ success: true });
+    } else {
+      const db = await loadDB();
+      const before = db.feedback.length;
+      db.feedback = db.feedback.filter(f=>f.id!==id);
+      if (before===db.feedback.length) return res.status(404).json({ error:'找不到資料' });
+      await saveDB(db);
+      return res.json({ success:true });
+    }
+  } catch (err) {
+    console.error('Delete feedback error', err);
     res.status(500).json({ error: '伺服器錯誤' });
   }
 });
@@ -299,6 +462,26 @@ app.get('/api/proxy/wra/realtime-water-level', async (req, res) => {
   } catch (err) {
     console.error('WRA proxy error', err);
     return res.status(502).json({ error: '無法取得水利署資料' });
+  }
+});
+
+// Shovel 代理，避免瀏覽器 CORS 受阻
+app.get('/api/proxy/shovel', async (req, res) => {
+  try {
+    const upstream = await fetch('https://shovel-heroes.com/Map/data.json', { headers: { 'user-agent': 'Mozilla/5.0' } });
+    if (!upstream.ok) {
+      const txt = await upstream.text();
+      return res.status(upstream.status).json({ error: 'Shovel 來源讀取失敗', detail: txt.slice(0, 512) });
+    }
+    // 以文字讀取一次並嘗試 JSON.parse，避免重複讀取 body
+    const txt = await upstream.text();
+    let data = [];
+    try { const parsed = JSON.parse(txt); if (Array.isArray(parsed)) data = parsed; } catch {}
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    res.json(Array.isArray(data) ? data : []);
+  } catch (err) {
+    console.error('Shovel proxy error', err);
+    res.status(502).json({ error: '無法取得 Shovel 任務資料' });
   }
 });
 
