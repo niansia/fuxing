@@ -57,8 +57,9 @@
 
   <script>
     const $ = (id)=>document.getElementById(id);
-    const urlParam = new URLSearchParams(location.search).get('url');
-    const defaultUrl = urlParam || (location.origin + '/simple.html');
+  const urlParam = new URLSearchParams(location.search).get('url');
+  const OFFICIAL = 'https://fuxing.onrender.com/simple.html';
+  const defaultUrl = (urlParam && urlParam.trim()) || OFFICIAL;
 
     const urlInput = $('urlInput');
     const sizeInput = $('sizeInput');
