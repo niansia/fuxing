@@ -68,13 +68,46 @@
     urlInput.value = defaultUrl;
     urlText.textContent = defaultUrl;
 
+    function loadScript(src){
+      return new Promise((resolve,reject)=>{
+        const s = document.createElement('script');
+        s.src = src; s.onload = ()=>resolve(); s.onerror = reject; document.head.appendChild(s);
+      });
+    }
+
+    async function renderQR(u, size){
+      // 1) 優先使用 QRCode.toCanvas（qrcode 套件）
+      if (window.QRCode && typeof window.QRCode.toCanvas === 'function') {
+        await window.QRCode.toCanvas(canvas, u, { width: size, margin: 2 });
+        return true;
+      }
+      // 2) 動態載入 QRious 當備援
+      if (!window.QRious) {
+        try { await loadScript('https://cdn.jsdelivr.net/npm/qrious@4.0.2/dist/qrious.min.js'); } catch {}
+      }
+      if (window.QRious) {
+        // QRious 會直接把圖畫上 canvas
+        new window.QRious({ element: canvas, value: u, size, level: 'H' });
+        return true;
+      }
+      // 3) 最後備援：用線上服務產生 PNG，再畫到 canvas
+      await new Promise((resolve)=>{
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = ()=>{ const ctx = canvas.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,size,size); ctx.drawImage(img,0,0,size,size); resolve(); };
+        img.onerror = resolve;
+        img.src = 'https://api.qrserver.com/v1/create-qr-code/?size='+size+'x'+size+'&data='+encodeURIComponent(u);
+      });
+      return true;
+    }
+
     async function draw() {
       const u = urlInput.value.trim() || defaultUrl;
       const size = Math.min(2048, Math.max(128, parseInt(sizeInput.value)||640));
       canvas.width = canvas.height = size;
       urlText.textContent = u;
       try {
-        await QRCode.toCanvas(canvas, u, { width: size, margin: 2 });
+        await renderQR(u, size);
       } catch (e) {
         console.error('QR render error', e);
         const ctx = canvas.getContext('2d');
