@@ -1380,12 +1380,23 @@
                     依照需求類型與完成狀態自動排序，最近更新的任務會在前方顯示。
                   </div>
                 </div>
-                <button
-                  onClick={()=>setIsFormOpen(true)}
-                  className="w-full lg:w-auto px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 flex items-center justify-center"
-                >
-                  <span className="mr-2">➕</span>📍 登記災情需求
-                </button>
+                <div className="flex gap-2 w-full lg:w-auto">
+                  <button
+                    onClick={()=>setIsFormOpen(true)}
+                    className="flex-1 lg:flex-none px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 flex items-center justify-center"
+                  >
+                    <span className="mr-2">➕</span>📍 登記災情需求
+                  </button>
+                  <a
+                    href="/qr.html?url=%2Fsimple.html"
+                    target="_blank"
+                    rel="noopener"
+                    className="flex-1 lg:flex-none px-5 py-2.5 bg-emerald-600 text-white font-semibold rounded-lg shadow-md hover:bg-emerald-700 flex items-center justify-center"
+                    title="開啟 QR Code 頁面，支援下載/列印"
+                  >
+                    🔗 取得 QR 碼
+                  </a>
+                </div>
               </div>
             </div>
 
