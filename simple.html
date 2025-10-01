@@ -30,7 +30,39 @@
 <body class="bg-slate-50">
   <div id="root"></div>
 
-  <script type="text/babel">
+  <!-- 先行錯誤攔截（在 Babel 腳本之前），避免白畫面沒有訊息 -->
+  <script>
+    (function(){
+      var mount = document.getElementById('root');
+      function paint(msg, color){
+        try{
+          var box = document.createElement('pre');
+          box.style.padding='10px'; box.style.background='#fff7ed'; box.style.color=color||'#9a3412';
+          box.style.border='1px solid #fdba74'; box.style.borderRadius='8px'; box.style.whiteSpace='pre-wrap';
+          box.textContent = msg;
+          mount && mount.appendChild(box);
+        }catch(e){}
+      }
+      window.addEventListener('error', function(e){
+        var msg = (e && (e.error && (e.error.stack||e.error.message))) || e.message || String(e);
+        paint('[error] '+ msg, '#b91c1c');
+      });
+      window.addEventListener('unhandledrejection', function(e){
+        var reason = e && (e.reason && (e.reason.stack||e.reason.message)) || String(e && e.reason);
+        paint('[unhandledrejection] ' + reason, '#b91c1c');
+      });
+      setTimeout(function(){
+        if (mount && !mount.firstChild) {
+          var hint = document.createElement('div');
+          hint.style.padding='8px'; hint.style.color='#64748b';
+          hint.textContent='頁面載入中…如持續空白，請打開開發者工具(Console) 取得第一個錯誤訊息傳給我們。';
+          mount.appendChild(hint);
+        }
+      }, 1500);
+    })();
+  </script>
+
+  <script type="text/babel" data-presets="env,react">
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
   const RequestType = { VOLUNTEER: '志工人力', SUPPLY: '物資需求' };
@@ -1632,13 +1664,6 @@
             </div>
             <div className="text-sm text-slate-500">{loadingRequests? '載入中…' : (requestError || `共 ${requests.length} 筆`)}</div>
           </div>
-
-          {/* 氣象 / 水位 */}
-          <WeatherAlert />
-
-          {/* 地圖總覽（含 CSV、官方、Shovel、自建等） */}
-          <LeafletMapPanel requests={requests} />
-
           <RequestDashboard
             requests={requests}
             onUpdateStatus={updateStatus}
@@ -1662,8 +1687,35 @@
     );
   };
 
-  const root = ReactDOM.createRoot(document.getElementById('root'));
-  root.render(<App/>);
+  // 在生產環境避免白畫面：把錯誤顯示在頁面上，並確保 Babel 已正確轉譯
+  (function attachGlobalErrorHandlers(){
+    const mount = document.getElementById('root');
+    function showErr(prefix, err){
+      try {
+        const msg = (err && (err.stack || err.message)) || String(err);
+        const box = document.createElement('pre');
+        box.style.padding = '12px'; box.style.background = '#fff0f0'; box.style.color = '#b91c1c'; box.style.border = '1px solid #fecaca'; box.style.borderRadius = '8px'; box.style.whiteSpace = 'pre-wrap';
+        box.textContent = `[${prefix}] ` + msg;
+        mount?.appendChild(box);
+      } catch {}
+    }
+    window.addEventListener('error', (e)=> showErr('error', e?.error || e?.message || e));
+    window.addEventListener('unhandledrejection', (e)=> showErr('unhandledrejection', e?.reason || e));
+  })();
+
+  try {
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App/>);
+  } catch (e) {
+    const mount = document.getElementById('root');
+    if (mount) {
+      const pre = document.createElement('pre');
+      pre.style.padding = '12px'; pre.style.background = '#fff0f0'; pre.style.color = '#b91c1c'; pre.style.border = '1px solid #fecaca'; pre.style.borderRadius = '8px'; pre.style.whiteSpace = 'pre-wrap';
+      pre.textContent = '初始化失敗：' + (e?.stack || e?.message || String(e));
+      mount.appendChild(pre);
+    }
+    console.error('App bootstrap error', e);
+  }
   </script>
 </body>
 </html>
