@@ -26,7 +26,10 @@ const envAllowed = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
-const ALLOWED = new Set([...defaultAllowed, ...envAllowed]);
+// Render 會提供 RENDER_EXTERNAL_URL（例如 https://fuxing.onrender.com），自動加入 allowlist
+const renderAllowed = (process.env.RENDER_EXTERNAL_URL || '').trim();
+const mergedAllowed = [...envAllowed, ...(renderAllowed ? [renderAllowed] : [])];
+const ALLOWED = new Set([...defaultAllowed, ...mergedAllowed]);
 
 app.use(cors({
   origin: function (origin, callback) {
