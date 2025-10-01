@@ -50,6 +50,30 @@ app.get('/', (req, res) => {
   res.redirect('/simple.html');
 });
 
+// ---------------------- 敏感路徑/檔案保護（在任何檔案服務前） ----------------------
+// 避免將整個專案根目錄作為靜態站台時，外洩資料庫/原始碼/腳本等敏感內容
+app.use((req, res, next) => {
+  try {
+    const p = req.path || '';
+    // 阻擋敏感資料夾（前後端原始碼、資料、腳本、文件…）
+    const denyPrefixes = [
+      '/Data/', '/server/', '/scripts/', '/docs/', '/.git/', '/node_modules/'
+    ];
+    if (denyPrefixes.some(prefix => p === prefix.slice(0, -1) || p.startsWith(prefix))) {
+      return res.status(404).send('Not Found');
+    }
+    // 阻擋常見機敏副檔名（資料庫/金鑰/備份/設定）
+    if (/\.(sqlite|sqlite3|db|bak|log|env|ini|pem|key|crt|pfx|p12|yml|yaml)$/i.test(p)) {
+      return res.status(404).send('Not Found');
+    }
+    // 阻擋特定檔名
+    if (/local-db\.json$/i.test(p)) {
+      return res.status(404).send('Not Found');
+    }
+  } catch {}
+  next();
+});
+
 // ---------------------- Postgres 設定 ----------------------
 const usePg = !!process.env.DATABASE_URL;
 let pool = null;

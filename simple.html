@@ -68,6 +68,13 @@
   const RequestStatus = { NEW:'新登記', IN_PROGRESS:'處理中', COMPLETED:'已完成', CANCELLED:'已取消' };
   const FeedbackStatus = { PENDING:'未處理', DOING:'處理中', DONE:'已完成' };
 
+  function escapeHTML(str){
+    const s = String(str ?? '');
+    return s.replace(/[&<>"]|'/g, (ch)=>({
+      '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+    })[ch]);
+  }
+
   function normalizeStatus(s) {
     const v = String(s || '').trim();
     if (v === '已前往' || v === '處理中') return RequestStatus.IN_PROGRESS;
@@ -76,7 +83,7 @@
     return v || RequestStatus.NEW;
   }
 
-  const ADMIN_TOKEN = (document.querySelector('meta[name="admin-token"]')?.content) || localStorage.getItem('ADMIN_TOKEN') || '';
+  const ADMIN_TOKEN = localStorage.getItem('ADMIN_TOKEN') || '';
   const adminAuthHeader = ADMIN_TOKEN ? { Authorization: 'Bearer ' + ADMIN_TOKEN } : {};
 
   (function patchFetchForAdmin(){
@@ -567,11 +574,11 @@
               iconSize:[16,16], iconAnchor:[8,8]
             });
             const marker = L.marker([lat,lng],{icon}).addTo(layerRef.current.csv[ds.key]);
-            const noteHtml = note ? `<div class="text-xs text-gray-600 mt-1 whitespace-pre-wrap">${note}</div>` : '';
-            const phoneHtml = phone ? `<div class="text-xs text-gray-600">📞 ${maskPhone(phone)}</div>` : '';
-            const addrHtml = finalAddr ? `<div class="text-xs text-gray-600">📍 ${finalAddr}</div>` : '';
+            const noteHtml = note ? `<div class="text-xs text-gray-600 mt-1 whitespace-pre-wrap">${escapeHTML(note)}</div>` : '';
+            const phoneHtml = phone ? `<div class="text-xs text-gray-600">📞 ${escapeHTML(maskPhone(phone))}</div>` : '';
+            const addrHtml = finalAddr ? `<div class="text-xs text-gray-600">📍 ${escapeHTML(finalAddr)}</div>` : '';
             marker.bindPopup(`<div class="text-sm">
-              <div class="font-medium mb-1">${name} <span class="text-[10px] text-gray-500">（${ds.label}）</span></div>
+              <div class="font-medium mb-1">${escapeHTML(name)} <span class="text-[10px] text-gray-500">（${escapeHTML(ds.label)}）</span></div>
               ${addrHtml}${phoneHtml}${noteHtml}
               <a class="text-blue-600 underline text-xs" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}">🧭 導航</a>
             </div>`);
@@ -604,8 +611,8 @@
           });
           const mk = L.marker([lat,lng], {icon}).addTo(g).bindPopup(`
             <div class="text-sm">
-              <div class="font-medium mb-1">${s.name} <span class="text-[10px] text-gray-500">（庇護所）</span></div>
-              <div class="text-xs text-gray-600">📍 ${s.address}</div>
+              <div class="font-medium mb-1">${escapeHTML(s.name)} <span class="text-[10px] text-gray-500">（庇護所）</span></div>
+              <div class="text-xs text-gray-600">📍 ${escapeHTML(s.address)}</div>
               <a class="text-blue-600 underline text-xs" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}">🧭 導航</a>
             </div>`);
           setList(prev => {
@@ -640,8 +647,8 @@
               const desc = (props.description||'').replace(/<[^>]+>/g,'');
               const latlng = layer.getLatLng();
               layer.bindPopup(`<div class="text-sm">
-                <div class="font-medium mb-1">${name}</div>
-                <div class="mb-2 whitespace-pre-wrap">${desc}</div>
+                <div class="font-medium mb-1">${escapeHTML(name)}</div>
+                <div class="mb-2 whitespace-pre-wrap">${escapeHTML(desc)}</div>
                 <a target="_blank" rel="noopener" class="text-blue-600 underline text-xs" href="https://www.google.com/maps/dir/?api=1&destination=${latlng.lat},${latlng.lng}">🧭 導航</a>
               </div>`);
               items.push({ source:'官方標註', name, address:'', desc, latlng, layer, type:'標註' });
@@ -667,8 +674,8 @@
             if (typeof lat!=='number' || typeof lng!=='number') return;
             const marker = L.marker([lat,lng]).addTo(layerRef.current.shovel)
               .bindPopup(`<div class="text-sm">
-                <div class="font-medium mb-1">${title||'Shovel 任務'}</div>
-                <div class="mb-2">${note||''}</div>
+                <div class="font-medium mb-1">${escapeHTML(title||'Shovel 任務')}</div>
+                <div class="mb-2">${escapeHTML(note||'')}</div>
                 <a target="_blank" rel="noopener" class="text-blue-600 underline text-xs" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}">🧭 導航</a>
               </div>`);
             items.push({ source:'Shovel', name:title||'任務', address:'', desc:note||'', latlng:L.latLng(lat,lng), layer:marker, type:type||'志工任務' });
@@ -699,8 +706,8 @@
             const p = f.properties||{};
             const mk = L.marker([lat,lng],{icon:govIcon(p.type)}).addTo(layerRef.current.gov)
               .bindPopup(`<div class="text-sm">
-                <div class="font-medium mb-1">${p.name||'政府設施'}</div>
-                <div class="mb-2 whitespace-pre-wrap">${p.description||''}</div>
+                <div class="font-medium mb-1">${escapeHTML(p.name||'政府設施')}</div>
+                <div class="mb-2 whitespace-pre-wrap">${escapeHTML(p.description||'')}</div>
                 <a target="_blank" rel="noopener" class="text-blue-600 underline text-xs" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}">🧭 導航</a>
               </div>`);
             items.push({ source:'政府設施', name:p.name||'設施', address:'', desc:p.description||'', latlng:L.latLng(lat,lng), layer:mk, type:'政府設施' });
@@ -713,8 +720,8 @@
         arr.forEach(u=>{
           const marker = L.marker([u.lat,u.lng]).addTo(layerRef.current.user)
             .bindPopup(`<div class="text-sm">
-              <div class="font-medium mb-1">${u.name}</div>
-              <div class="mb-2">${u.desc||''}</div>
+              <div class="font-medium mb-1">${escapeHTML(u.name)}</div>
+              <div class="mb-2">${escapeHTML(u.desc||'')}</div>
               <a target="_blank" rel="noopener" class="text-blue-600 underline text-xs" href="https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}">🧭 導航</a>
             </div>`);
           items.push({ ...u, source:'自建', address:u.address||'', latlng:L.latLng(u.lat,u.lng), layer:marker });
@@ -727,9 +734,9 @@
           const { lat, lng } = r.location;
           const mk = L.marker([lat,lng]).addTo(layerRef.current.req)
             .bindPopup(`<div class="text-sm">
-              <div class="font-medium mb-1">${r.type}</div>
-              <div class="mb-1 whitespace-pre-wrap">${r.description||''}</div>
-              <div class="text-xs text-gray-500 mb-2">聯絡：${r.contactPerson||''} / ${maskPhone(r.contactPhone)||''}</div>
+              <div class="font-medium mb-1">${escapeHTML(r.type)}</div>
+              <div class="mb-1 whitespace-pre-wrap">${escapeHTML(r.description||'')}</div>
+              <div class="text-xs text-gray-500 mb-2">聯絡：${escapeHTML(r.contactPerson||'')} / ${escapeHTML(maskPhone(r.contactPhone)||'')}</div>
               <a target="_blank" rel="noopener" class="text-blue-600 underline text-xs" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}">🧭 導航</a>
             </div>`);
           items.push({ source:'需求', name:r.type, address:r.address||'', desc:r.description||'', latlng:L.latLng(lat,lng), layer:mk, type:r.type });
@@ -1177,7 +1184,7 @@
   };
 
   const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, activeFilter, statusFilter, searchKeyword }) => {
-    const [view, setView] = useState('cards'); // 'cards' | 'list'
+    const [view, setView] = useState('cards');
     const filtered = requests
       .map(r => ({...r, status: normalizeStatus(r.status)}))
       .filter(r => activeFilter==='全部' ? true : r.type===activeFilter)
@@ -1519,6 +1526,15 @@
     const [requestError, setRequestError] = useState(null);
 
     const updates = [
+      {
+        date: '2025/10/01',
+        title: '資安強化：封檔、防 XSS、權杖不落地 HTML',
+        items: [
+          '新增敏感路徑/檔案保護：封鎖 /Data、/server、/scripts、/docs 與 .sqlite/.db/.env 等副檔名（避免資料庫與原始碼被下載）',
+          '修補地圖 Popup XSS：所有 popup 文字改用 escapeHTML 轉義，避免惡意腳本注入',
+          '管理金鑰不再從 <meta> 讀取，只從 localStorage 取得，降低前端原始碼外露風險'
+        ],
+      },
       {
         date: '2025/10/01',
         title: '系統更新：停用刪除需求、改以已完成結案',
