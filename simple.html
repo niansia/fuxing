@@ -5,18 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>花蓮光復鄉互助網</title>
 
-  <!-- React / Babel / Tailwind -->
+  
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin="anonymous"></script>
   <script src="https://cdn.tailwindcss.com" crossorigin="anonymous"></script>
 
-  <!-- Leaflet & toGeoJSON (KML 轉 GeoJSON) -->
+  
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/togeojson@0.16.0/dist/togeojson.umd.js" crossorigin="anonymous"></script>
 
-  <!-- PapaParse for CSV parsing -->
+  
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" crossorigin="anonymous"></script>
 
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='8' fill='%23ef4444'/%3E%3C/svg%3E" />
@@ -36,7 +36,7 @@
   <script type="text/babel">
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
-  /* ---------------- 常數 / 公用 ---------------- */
+  
   const RequestType = { VOLUNTEER: '志工人力', SUPPLY: '物資需求' };
   const RequestStatus = { NEW:'新登記', IN_PROGRESS:'已前往', COMPLETED:'已完成' };
   const uuid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -53,7 +53,6 @@
   const GEO_CACHE_KEY = 'gf_geo_cache_v4';
   const GEO_FAIL_KEY  = 'gf_geo_fail_v1';
 
-  // 外部資源連結
   const EXTERNAL_LINKS = [
     { name:'光復災情整合網', url:'https://sites.google.com/view/guangfu250923/home?authuser=0' },
     { name:'救災列表地圖',   url:'https://tainan.olc.tw/p/guangfu250923/#db7bcdce-b986-4128-a9ab-98d1f6b14b36' },
@@ -61,7 +60,6 @@
     { name:'住宿點',         url:'https://sites.google.com/view/guangfu250923/%E7%8F%BE%E5%A0%B4%E4%BA%BA%E5%93%A1%E6%AC%B2%E6%8F%90%E4%BE%9B%E8%B3%87%E6%BA%90/hotel?authuser=0' },
   ];
 
-  // 手動庇護所（以地址定位）
   const SHELTER_PRESETS = [
     { name:'光復國小', address:'花蓮縣光復鄉中山路三段75號' },
     { name:'東豐部落', address:'花蓮縣光復鄉東富路5號' },
@@ -79,7 +77,6 @@
     { name:'大安活動中心', address:'花蓮縣光復鄉忠孝路23巷11號1樓' }
   ];
 
-  // CSV資料集
   const DATASETS = [
     {key:'baths',    label:'洗澡點',   color:'#0ea5e9', csv:'Data/光復志工洗澡點.csv', icon:'🚿'},
     {key:'shelters', label:'庇護所',   color:'#10b981', csv:'Data/庇護所資訊.csv',     icon:'🏛️'},
@@ -128,7 +125,7 @@
     return text ? JSON.parse(text) : null;
   }
 
-  // ---- 地理編碼（只用地址） ----
+  
   function normalizeAddress(addr) {
     let a = (addr || '').trim();
     if (!a) return '';
@@ -218,7 +215,7 @@
     return null;
   }
 
-  /* ---------------- 標頭 ---------------- */
+  
   const Header = () => (
     <header className="bg-white shadow-md ui-over">
       <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4">
@@ -235,7 +232,7 @@
     </header>
   );
 
-  /* ---------------- 跑馬燈 ---------------- */
+  
   const EmergencyTicker = () => {
     const [items, setItems] = useState([]);
     useEffect(() => {
@@ -272,7 +269,7 @@
     );
   };
 
-  /* ---------------- 氣象 / 水位 ---------------- */
+  
   const WeatherAlert = () => {
     const [data, setData] = useState(null);
     const load = async () => {
@@ -375,7 +372,7 @@
     );
   };
 
-  /* ---------------- 官方 My Maps 彈窗 ---------------- */
+  
   const DisasterMap = ({ isOpen, onClose }) => {
     if (!isOpen) return null;
     return (
@@ -397,7 +394,7 @@
     );
   };
 
-  // 其他網站任務（Shovel）視窗
+  
   const ShovelModal = ({ isOpen, onClose }) => {
     if (!isOpen) return null;
     return (
@@ -419,7 +416,7 @@
     );
   };
 
-  /* ---------------- 地圖主面板 ---------------- */
+  
   const LeafletMapPanel = ({requests}) => {
     const mapRef = useRef(null);
     const layerRef = useRef({
@@ -434,7 +431,7 @@
     const [showAddForm, setShowAddForm] = useState(false);
     const lastGeoRef = useRef(0); // geocode 節流
 
-    // 初始地圖
+    
     useEffect(() => {
       const m = L.map('gf-map', { center:[CENTER.lat, CENTER.lon], zoom:12 });
       mapRef.current = m;
@@ -442,7 +439,7 @@
         maxZoom: 19, attribution: '&copy; OpenStreetMap'
       }).addTo(m);
 
-      // Layer groups
+      
       layerRef.current.kml     = L.layerGroup().addTo(m);
       layerRef.current.user    = L.layerGroup().addTo(m);
       layerRef.current.req     = L.layerGroup().addTo(m);
@@ -469,7 +466,7 @@
       },()=>alert('定位失敗，請檢查權限'));
     }, []);
 
-    // geocode 節流（1.5s/次）
+    
     const geocodeWithThrottle = useCallback(async (q)=>{
       const now = Date.now();
       const wait = Math.max(0, 1500 - (now - lastGeoRef.current));
@@ -479,7 +476,7 @@
       return res;
     }, []);
 
-    // 讀CSV並畫圖層（只用地址定位；沒地址就跳過）
+    
     const drawCsvLayers = useCallback(async()=>{
       Object.values(layerRef.current.csv).forEach(g => g?.clearLayers());
       const newItems = [];
@@ -500,7 +497,7 @@
             const phone = tryPick(row, ['電話','聯絡電話','phone','tel']);
             const note = tryPick(row, ['備註','說明','描述','note','desc','內容','content']);
 
-            // 以地址為主，沒有地址就不嘗試名稱定位
+            
             let finalAddr = addressRaw;
             if ((!isFinite(lat) || !isFinite(lng)) && finalAddr) {
               const g = await geocodeWithThrottle(finalAddr);
@@ -530,11 +527,11 @@
       setList(prev => [...prev.filter(x=>x.source!=='CSV'), ...newItems]);
     }, [csvVisible, geocodeWithThrottle]);
 
-    // 繪製手動庇護所（只用地址定位）
+    
     const drawManualShelters = useCallback(async()=>{
       const g = layerRef.current.manualShelters; if (!g) return;
       g.clearLayers();
-      // 先側欄佔位
+      
       setList(prev => [
         ...prev.filter(x=>x.source!=='手動'),
         ...SHELTER_PRESETS.map(s=>({ id:'manual::'+s.name, source:'手動', name:s.name, address:s.address, latlng:null, layer:null, type:'庇護所', pending:true }))
@@ -566,7 +563,7 @@
       }
     }, [geocodeWithThrottle]);
 
-    // 其他靜態資料
+    
     const redrawStatic = useCallback(async()=>{
       if (!mapRef.current) return;
       const items = [];
@@ -577,7 +574,7 @@
       layerRef.current.user?.clearLayers();
       layerRef.current.req?.clearLayers();
 
-      // KML（保護性載入）
+      
       try {
         if (window.toGeoJSON) {
           const kmlTxt = await fetchKMLText();
@@ -603,9 +600,9 @@
         }
       } catch(e){ console.warn('KML parse fail', e); }
 
-      // Shovel
+      
       try {
-        // 先走後端 proxy，避免 CORS；失敗再嘗試直連
+        
         let r = await fetch(SHOVEL_JSON);
         if (!r.ok) r = await fetch('https://shovel-heroes.com/Map/data.json');
         let arr = [];
@@ -613,7 +610,7 @@
           try {
             arr = await r.json();
           } catch {
-            // 某些伺服器以 text/plain 回傳，改用文字轉 JSON
+            
             const txt = await r.text();
             try { arr = JSON.parse(txt); } catch {}
           }
@@ -631,7 +628,7 @@
         }
       } catch(e){ console.warn('Shovel load fail', e); }
 
-      // 政府點位
+      
       try {
         const r = await fetch(GOV_POINTS_URL);
         if (r.ok) {
@@ -664,7 +661,7 @@
         }
       } catch(e){ console.warn('gov points fail', e); }
 
-      // 自建點
+      
       try {
         const arr = JSON.parse(localStorage.getItem(LS_USER_ADDS)||'[]');
         arr.forEach(u=>{
@@ -678,7 +675,7 @@
         });
       } catch(e){}
 
-      // 需求點
+      
       try {
         const reqPts = (requests||[]).filter(r=>r.location?.lat && r.location?.lng);
         reqPts.forEach(r=>{
@@ -702,7 +699,7 @@
 
     useEffect(() => { redrawStatic(); drawCsvLayers(); drawManualShelters(); }, [drawCsvLayers, redrawStatic, drawManualShelters]);
 
-    // 列表篩選
+    
     const filteredList = useMemo(()=>{
       return list
         .slice()
@@ -720,7 +717,7 @@
         });
     }, [list, filterKey, search]);
 
-    // 控制CSV layer顯示
+    
     const toggleCsv = (k) => {
       setCsvVisible(v => {
         const next = { ...v, [k]: !v[k] };
@@ -804,7 +801,7 @@
                 ))}
                 {filteredList.length===0 && <div className="text-xs text-gray-500">沒有符合條件的點位</div>}
               </div>
-              {/* 手機寬度時顯示外部連結 */}
+              
               <div className="mt-4 flex md:hidden flex-wrap gap-2">
                 {EXTERNAL_LINKS.map(l=>(
                   <a key={l.url} href={l.url} target="_blank" rel="noopener" className="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700">{l.name}</a>
@@ -855,7 +852,7 @@
     return await r.text();
   }
 
-  // 新增點位表單
+  
   const AddPointForm = ({ isOpen, onClose, onSubmit }) => {
     const [name, setName] = useState('');
     const [category, setCategory] = useState('其他');
@@ -1273,7 +1270,7 @@
     const [submitting, setSubmitting] = useState(false);
     if (!isOpen) return null;
 
-    // 定位自己的即時位置
+    
     const getCurrentLocation = () => {
       if (!navigator.geolocation) { setError('您的瀏覽器不支援定位功能'); return; }
       setGettingLocation(true);
@@ -1309,7 +1306,7 @@
       }
     };
 
-    // 讀取/壓縮圖片為 dataURL（max 邊 1280, JPEG 品質0.85）
+    
     const handleFile = async (file) => {
       if (!file) return setPhoto(null);
       const img = new Image();
@@ -1410,7 +1407,7 @@
     );
   };
 
-  /* ---------------- App 主組件 ---------------- */
+  
   const App = () => {
     const [requests, setRequests] = useState([]);
     const [isFormOpen, setIsFormOpen] = useState(false);
@@ -1424,7 +1421,7 @@
   const [searchKeyword, setSearchKeyword] = useState('');
     const [requestError, setRequestError] = useState(null);
 
-    // 公開列表的前端第二層遮蔽，避免在管理員 Cookie 存在時曝露原始聯絡方式
+  
     const maskContact = (c)=>{
       if (!c) return c;
       const s = String(c);
@@ -1460,7 +1457,7 @@
 
     useEffect(()=>{ fetchRequests(); }, [fetchRequests]);
 
-    // 綁定 Header 的『網站意見』按鈕
+    
     useEffect(() => {
       const btn = document.getElementById('open-feedback');
       if (!btn) return;
@@ -1471,7 +1468,7 @@
 
     const addRequest = useCallback(async (data)=>{
       try {
-        // 若看起來像含有全名（兩到三個中文字且非單姓/暱稱），做簡單遮蔽，只留姓或首字
+        
         let safeName = (data.contactPerson||'').trim();
         if (/^[\u4e00-\u9fa5]{2,4}$/.test(safeName)) {
           safeName = safeName.slice(0,1) + '○';
@@ -1522,10 +1519,10 @@
 
     const deleteRequest = useCallback(async (id)=>{
       try {
-        // 先嘗試標準 DELETE
+        
         let res = await fetch(`/api/requests/${id}`, { method: 'DELETE' });
         if (!res.ok) {
-          // 若 DELETE 被擋，改用 POST 備援
+          
           res = await fetch(`/api/requests/${id}/delete`, { method: 'POST' });
         }
         await parseJSONResponse(res, '刪除需求失敗');
@@ -1538,7 +1535,7 @@
 
     const filters = ['全部', RequestType.VOLUNTEER, RequestType.SUPPLY];
 
-    // ---- Feedback APIs ----
+    
     const loadFeedback = useCallback(async ()=>{
       try {
         const res = await fetch('/api/feedback');
@@ -1547,7 +1544,7 @@
       } catch (e) { console.error(e); }
     }, []);
 
-    // 首頁顯示公開留言板，進站自動載入一次
+    
     useEffect(()=>{ loadFeedback(); }, [loadFeedback]);
 
     const addFeedback = useCallback(async (payload)=>{
@@ -1576,7 +1573,7 @@
           <div className="space-y-6">
             
 
-            {/* 外部任務顯示 - 高可見度橫幅 */}
+            
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 ui-over flex flex-col md:flex-row md:items-center md:justify-between gap-3">
               <div className="text-amber-900 text-sm">
                 <div className="font-semibold mb-0.5">其他網站救災任務（Shovel Heroes）</div>
@@ -1602,7 +1599,7 @@
                       </button>
                     ))}
                   </div>
-                  {/* 狀態篩選 */}
+                  
                   <div className="flex bg-slate-200 rounded-lg p-1">
                     {statusFilters.map(s => (
                       <button
@@ -1643,7 +1640,7 @@
                   </a>
                 </div>
               </div>
-              {/* 任務搜尋欄位 */}
+              
               <div className="mt-4">
                 <input
                   type="text"
@@ -1676,7 +1673,7 @@
               />
             )}
 
-            {/* 公開留言板（所有人可見與管理） */}
+            
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 ui-over">
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-lg font-bold">💬 公開留言板</h3>
@@ -1715,7 +1712,7 @@
             </div>
 
             <LeafletMapPanel requests={requests}/>
-            {/* 將即時氣象移到頁面底部，避免擋到表單 */}
+            
             <WeatherAlert/>
           </div>
         </main>
@@ -1729,7 +1726,7 @@
   ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
   </script>
   <script type="text/babel">
-  // --- 意見面板元件 ---
+  
   const FeedbackModal = ({ isOpen, onClose, list, onCreate, onUpdateStatus, onDelete }) => {
     const [name,setName]=React.useState('');
     const [contact,setContact]=React.useState('');
