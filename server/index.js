@@ -14,34 +14,30 @@ const { Pool } = require('pg');
 // ---------------------- 基本設定 ----------------------
 const app = express();
 const port = process.env.PORT || 5001;
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || null; // 供管理端查看完整資料用
 
-app.use(cors());
+// ---- CORS 限制：僅允許指定來源（同站請求不走 CORS，不受此限制）----
+const defaultAllowed = [
+  'http://localhost:5001',
+  'http://127.0.0.1:5001',
+  'http://localhost:5500',
+  'http://127.0.0.1:5500'
+];
+const envAllowed = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+const ALLOWED = new Set([...defaultAllowed, ...envAllowed]);
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // 同站請求（無 origin）允許；若有 origin，需在 allowlist 內
+    if (!origin) return callback(null, true);
+    if (ALLOWED.has(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: false
+}));
 app.use(express.json());
-
-// ---- Security Headers ----
-app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
-  res.setHeader('Permissions-Policy', 'geolocation=(self), microphone=(), camera=()');
-  const csp = [
-    "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net https://cdn.tailwindcss.com",
-    "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://cdn.tailwindcss.com",
-    "img-src 'self' data: blob: https://*",
-    "connect-src 'self' https://api.open-meteo.com https://api.waqi.info https://opendata.wra.gov.tw https://shovel-heroes.com https://tainan.olc.tw https://nominatim.openstreetmap.org https://*.tile.openstreetmap.org",
-    "font-src 'self' data:",
-    "frame-src 'self' https://shovel-heroes.com",
-    "frame-ancestors 'self'",
-    "object-src 'none'",
-    "base-uri 'self'",
-    "form-action 'self'",
-  ].join('; ');
-  res.setHeader('Content-Security-Policy', csp);
-  next();
-});
 
 // 健康檢查
 app.get('/health', (_, res) => res.send('ok'));
@@ -49,20 +45,6 @@ app.get('/health', (_, res) => res.send('ok'));
 // （新增）根路由導到 simple.html，方便直接開站
 app.get('/', (req, res) => {
   res.redirect('/simple.html');
-});
-
-// ---- Admin session (HttpOnly cookie) ----
-app.post('/api/admin/login', async (req, res) => {
-  const { token } = req.body || {};
-  if (!ADMIN_TOKEN) return res.status(501).json({ error: 'ADMIN_TOKEN 未設定' });
-  if (token !== ADMIN_TOKEN) return res.status(401).json({ error: '認證失敗' });
-  res.setHeader('Set-Cookie', `adm=1; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${60*60*4}`);
-  return res.json({ success: true });
-});
-
-app.post('/api/admin/logout', async (_req, res) => {
-  res.setHeader('Set-Cookie', 'adm=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0');
-  return res.json({ success: true });
 });
 
 // ---------------------- Postgres 設定 ----------------------
@@ -204,11 +186,49 @@ app.use(express.static('.', {
 // ---------------------- 共用工具 ----------------------
 const uuid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-const serializeRequestRow = (row, volunteers = []) => ({
+// 管理金鑰中介層（僅當設定 ADMIN_TOKEN 時啟用強制）
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+function requireAdmin(req, res, next) {
+  if (!ADMIN_TOKEN) {
+    // 未設定金鑰時，視為開發模式：放行並警告
+    if (!requireAdmin.warned) {
+      console.warn('[SECURITY] ADMIN_TOKEN 未設定，管理路由未受保護（僅建議在本機開發時使用）。');
+      requireAdmin.warned = true;
+    }
+    return next();
+  }
+  const h = req.headers['authorization'] || '';
+  const alt = req.headers['x-admin-token'] || '';
+  const token = h.startsWith('Bearer ') ? h.slice(7) : alt;
+  if (token && token === ADMIN_TOKEN) return next();
+  return res.status(401).json({ error: '缺少或無效的管理金鑰' });
+}
+
+// 基礎遮蔽：電話只顯示末 3-4 碼
+function maskPhone(p) {
+  const s = String(p || '').trim();
+  if (!s) return '';
+  if (s.length <= 4) return '*'.repeat(Math.max(0, s.length - 1)) + s.slice(-1);
+  const keep = s.length >= 10 ? 4 : 3;
+  return s.slice(0, Math.max(0, s.length - keep)).replace(/\S/g, '*') + s.slice(-keep);
+}
+
+// 名字遮蔽：中文名保留第一字，其餘以○；其他語系保留首字母
+function maskName(n) {
+  const s = String(n || '').trim();
+  if (/^[\u4e00-\u9fa5]{2,4}$/.test(s)) return s.slice(0, 1) + '○';
+  if (!s) return '';
+  return s[0] + '**';
+}
+
+function serializeRequestRow(row, volunteers = [], { mask = true } = {}) {
+  const contactPerson = mask ? maskName(row.contact_person) : row.contact_person;
+  const contactPhone = mask ? maskPhone(row.contact_phone) : row.contact_phone;
+  return {
   id: row.id,
   type: row.type,
-  contactPerson: row.contact_person,
-  contactPhone: row.contact_phone,
+  contactPerson,
+  contactPhone,
   address: row.address,
   description: row.description,
   status: row.status,
@@ -218,73 +238,17 @@ const serializeRequestRow = (row, volunteers = []) => ({
     ? { lat: row.location_lat, lng: row.location_lng }
     : null,
   volunteers: volunteers.map(v => ({
-    name: v.name,
-    phone: v.phone,
+    name: mask ? maskName(v.name) : v.name,
+    phone: mask ? maskPhone(v.phone) : v.phone,
     note: v.note || '',
     createdAt: v.created_at
   }))
-});
-
-// ===== 資安/隱私：遮蔽工具 =====
-function isAdmin(req){
-  if (!ADMIN_TOKEN) return false;
-  const token = req.headers['x-admin-token'] || (req.get && req.get('x-admin-token'));
-  if (token && token === ADMIN_TOKEN) return true;
-  const ck = req.headers['cookie'] || '';
-  if (ck && ck.includes('adm=')) {
-    try {
-      const m = ck.split(';').map(s=>s.trim()).find(p=>p.startsWith('adm='));
-      const val = m ? decodeURIComponent(m.split('=')[1]) : '';
-      if (val === '1') return true;
-    } catch {}
-  }
-  return false;
-}
-
-function maskPhone(phone){
-  if (typeof phone !== 'string') return phone;
-  const digits = phone.replace(/\D/g,'');
-  if (digits.length < 7) return phone.replace(/\d(?=\d{2})/g,'*');
-  // 留前2後3
-  let seen = 0, total = digits.length;
-  return phone.replace(/\d/g, (m)=>{
-    seen++;
-    return (seen<=2 || seen>total-3) ? m : '＊';
-  });
-}
-
-function maskContact(contact){
-  if (typeof contact !== 'string') return contact;
-  const c = contact.trim();
-  // 手機/電話：有 7 碼以上數字就當作電話遮蔽
-  const digits = c.replace(/\D/g,'');
-  if (digits.length >= 7) return maskPhone(c);
-  // Email 遮蔽
-  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c)){
-    const [name, domain] = c.split('@');
-    const masked = name.length<=2 ? name[0] + '***' : name.slice(0,2) + '***';
-    return `${masked}@${domain}`;
-  }
-  // 其他：僅顯示前2+***
-  if (c.length <= 2) return c[0] + '＊';
-  return c.slice(0,2) + '＊＊＊';
-}
-
-function serializeRequestRowSafe(row, volunteers = [], admin=false){
-  const base = serializeRequestRow(row, volunteers);
-  if (admin) return base;
-  // 公開回應：遮蔽電話
-  return {
-    ...base,
-    contactPhone: maskPhone(base.contactPhone),
-    volunteers: base.volunteers.map(v=>({ ...v, phone: maskPhone(v.phone) }))
   };
 }
 
 // ---------------------- Requests / Volunteers API ----------------------
 app.get('/api/requests', async (req, res) => {
   try {
-    const admin = isAdmin(req);
     if (usePg) {
       const { rows } = await pool.query('SELECT * FROM requests ORDER BY created_at DESC');
       const { rows: vrows } = await pool.query(
@@ -292,11 +256,11 @@ app.get('/api/requests', async (req, res) => {
       );
       const bucket = new Map();
       for (const v of vrows) { if (!bucket.has(v.request_id)) bucket.set(v.request_id, []); bucket.get(v.request_id).push(v); }
-      return res.json(rows.map(r => serializeRequestRowSafe(r, bucket.get(r.id) || [], admin)));
+      return res.json(rows.map(r => serializeRequestRow(r, bucket.get(r.id) || [], { mask: true })));
     } else {
       const db = await loadDB();
       const rows = db.requests.slice().sort((a,b)=> new Date(b.created_at)-new Date(a.created_at));
-      const out = rows.map(r => serializeRequestRowSafe(r, db.volunteers.filter(v=>v.request_id===r.id), admin));
+      const out = rows.map(r => serializeRequestRow(r, db.volunteers.filter(v=>v.request_id===r.id), { mask: true }));
       return res.json(out);
     }
   } catch (err) {
@@ -305,9 +269,9 @@ app.get('/api/requests', async (req, res) => {
   }
 });
 
+// 建立需求：公共入口（不需管理金鑰），伺服器內部保存原始電話，但回傳一律遮蔽
 app.post('/api/requests', async (req, res) => {
   try {
-    const admin = isAdmin(req);
     const { type, contactPerson, contactPhone, address, description, location, photo } = req.body || {};
     if (!type || !contactPerson || !contactPhone || !address || !description) {
       return res.status(400).json({ error: '缺少必要欄位' });
@@ -335,12 +299,12 @@ app.post('/api/requests', async (req, res) => {
         [ id, type, safeContactPerson, contactPhone, address, description, status, safePhoto, location?.lat ?? null, location?.lng ?? null, createdAt ]
       );
       const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
-      return res.status(201).json(serializeRequestRowSafe(rows[0], [], admin));
+      return res.status(201).json(serializeRequestRow(rows[0], [], { mask: true }));
     } else {
       const db = await loadDB();
       db.requests.push({ id, type, contact_person: safeContactPerson, contact_phone: contactPhone, address, description, status, photo: safePhoto, location_lat: location?.lat ?? null, location_lng: location?.lng ?? null, created_at: createdAt });
       await saveDB(db);
-      return res.status(201).json(serializeRequestRowSafe(db.requests.find(r=>r.id===id), [], admin));
+      return res.status(201).json(serializeRequestRow(db.requests.find(r=>r.id===id), [], { mask: true }));
     }
   } catch (err) {
     console.error('Create request error', err);
@@ -348,9 +312,9 @@ app.post('/api/requests', async (req, res) => {
   }
 });
 
-app.patch('/api/requests/:id/status', async (req, res) => {
+// 更新狀態（完成任務/進度等）：需管理金鑰
+app.patch('/api/requests/:id/status', requireAdmin, async (req, res) => {
   try {
-    const admin = isAdmin(req);
     const id = req.params.id;
     const { status } = req.body || {};
     if (!status) return res.status(400).json({ error: '缺少 status' });
@@ -361,7 +325,7 @@ app.patch('/api/requests/:id/status', async (req, res) => {
       await pool.query('UPDATE requests SET status = $1 WHERE id = $2', [status, id]);
       const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
       const { rows: vrows } = await pool.query('SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',[id]);
-      return res.json(serializeRequestRowSafe(rows[0], vrows, admin));
+      return res.json(serializeRequestRow(rows[0], vrows, { mask: true }));
     } else {
       const db = await loadDB();
       const r = db.requests.find(r=>r.id===id);
@@ -369,7 +333,7 @@ app.patch('/api/requests/:id/status', async (req, res) => {
       r.status = status;
       await saveDB(db);
       const vols = db.volunteers.filter(v=>v.request_id===id);
-      return res.json(serializeRequestRowSafe(r, vols, admin));
+      return res.json(serializeRequestRow(r, vols, { mask: true }));
     }
   } catch (err) {
     console.error('Update status error', err);
@@ -377,9 +341,9 @@ app.patch('/api/requests/:id/status', async (req, res) => {
   }
 });
 
+// 志工報名：公共入口（不需管理金鑰），回傳遮蔽資料
 app.post('/api/requests/:id/volunteers', async (req, res) => {
   try {
-    const admin = isAdmin(req);
     const id = req.params.id;
     const { name, phone, note } = req.body || {};
     if (!name || !phone) return res.status(400).json({ error: '缺少志工姓名或電話' });
@@ -390,7 +354,7 @@ app.post('/api/requests/:id/volunteers', async (req, res) => {
       await pool.query('INSERT INTO volunteers (request_id, name, phone, note, created_at) VALUES ($1,$2,$3,$4,$5)', [id, name, phone, note || null, new Date().toISOString()]);
       const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
       const { rows: vrows } = await pool.query('SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',[id]);
-      return res.status(201).json(serializeRequestRowSafe(rows[0], vrows, admin));
+      return res.status(201).json(serializeRequestRow(rows[0], vrows, { mask: true }));
     } else {
       const db = await loadDB();
       if (!db.requests.find(r=>r.id===id)) return res.status(404).json({ error:'找不到需求' });
@@ -398,7 +362,7 @@ app.post('/api/requests/:id/volunteers', async (req, res) => {
       await saveDB(db);
       const r = db.requests.find(r=>r.id===id);
       const vols = db.volunteers.filter(v=>v.request_id===id);
-      return res.status(201).json(serializeRequestRowSafe(r, vols, admin));
+      return res.status(201).json(serializeRequestRow(r, vols, { mask: true }));
     }
   } catch (err) {
     console.error('Add volunteer error', err);
@@ -406,7 +370,8 @@ app.post('/api/requests/:id/volunteers', async (req, res) => {
   }
 });
 
-app.delete('/api/requests/:id', async (req, res) => {
+// 刪除需求：需管理金鑰
+app.delete('/api/requests/:id', requireAdmin, async (req, res) => {
   try {
     const id = req.params.id;
     if (usePg) {
@@ -430,7 +395,8 @@ app.delete('/api/requests/:id', async (req, res) => {
 });
 
 // 一些環境/網路可能會擋 DELETE，提供 POST 備援路由
-app.post('/api/requests/:id/delete', async (req, res) => {
+// 刪除需求（POST 備援）：需管理金鑰
+app.post('/api/requests/:id/delete', requireAdmin, async (req, res) => {
   try {
     const id = req.params.id;
     if (usePg) {
@@ -456,16 +422,24 @@ app.post('/api/requests/:id/delete', async (req, res) => {
 // ---------------------- Feedback API ----------------------
 app.get('/api/feedback', async (req, res) => {
   try {
-    const admin = isAdmin(req);
     if (usePg) {
       const { rows } = await pool.query('SELECT * FROM feedback ORDER BY created_at DESC');
-      const out = rows.map(r => admin ? r : { ...r, contact: maskContact(r.contact) });
-      return res.json(out);
+      // 遮蔽回傳中的 name/contact（可能含電話/Email）
+      const masked = rows.map(r => ({
+        ...r,
+        name: maskName(r.name),
+        contact: r.contact ? maskPhone(r.contact) : null
+      }));
+      return res.json(masked);
     } else {
       const db = await loadDB();
       const rows = db.feedback.slice().sort((a,b)=> new Date(b.created_at)-new Date(a.created_at));
-      const out = rows.map(r => admin ? r : { ...r, contact: maskContact(r.contact) });
-      return res.json(out);
+      const masked = rows.map(r => ({
+        ...r,
+        name: maskName(r.name),
+        contact: r.contact ? maskPhone(r.contact) : null
+      }));
+      return res.json(masked);
     }
   } catch (err) {
     console.error('List feedback error', err);
@@ -475,7 +449,6 @@ app.get('/api/feedback', async (req, res) => {
 
 app.post('/api/feedback', async (req, res) => {
   try {
-    const admin = isAdmin(req);
     const { name, contact, message } = req.body || {};
     if (!message || String(message).trim() === '') return res.status(400).json({ error: '請輸入意見內容' });
     const id = uuid();
@@ -484,14 +457,13 @@ app.post('/api/feedback', async (req, res) => {
     if (usePg) {
       await pool.query('INSERT INTO feedback (id, name, contact, message, status, created_at) VALUES ($1,$2,$3,$4,$5,$6)', [id, name || null, contact || null, message, status, createdAt]);
       const { rows } = await pool.query('SELECT * FROM feedback WHERE id = $1', [id]);
-      const row = rows[0];
-      return res.status(201).json(admin ? row : { ...row, contact: maskContact(row.contact) });
+      return res.status(201).json(rows[0]);
     } else {
       const db = await loadDB();
       const row = { id, name: name||null, contact: contact||null, message, status, created_at: createdAt };
       db.feedback.unshift(row);
       await saveDB(db);
-      return res.status(201).json(admin ? row : { ...row, contact: maskContact(row.contact) });
+      return res.status(201).json(row);
     }
   } catch (err) {
     console.error('Create feedback error', err);
@@ -499,9 +471,9 @@ app.post('/api/feedback', async (req, res) => {
   }
 });
 
-app.patch('/api/feedback/:id/status', async (req, res) => {
+// 更新意見狀態：需管理金鑰
+app.patch('/api/feedback/:id/status', requireAdmin, async (req, res) => {
   try {
-    const admin = isAdmin(req);
     const id = req.params.id;
     const { status } = req.body || {};
     if (!status) return res.status(400).json({ error: '缺少 status' });
@@ -510,15 +482,15 @@ app.patch('/api/feedback/:id/status', async (req, res) => {
       if (cur.rowCount === 0) return res.status(404).json({ error: '找不到資料' });
       await pool.query('UPDATE feedback SET status = $1 WHERE id = $2', [status, id]);
       const { rows } = await pool.query('SELECT * FROM feedback WHERE id = $1', [id]);
-      const row = rows[0];
-      return res.json(admin ? row : { ...row, contact: maskContact(row.contact) });
+      const r = rows[0];
+      return res.json({ ...r, name: maskName(r.name), contact: r.contact ? maskPhone(r.contact) : null });
     } else {
       const db = await loadDB();
       const row = db.feedback.find(f=>f.id===id);
       if (!row) return res.status(404).json({ error:'找不到資料' });
       row.status = status;
       await saveDB(db);
-      return res.json(admin ? row : { ...row, contact: maskContact(row.contact) });
+      return res.json({ ...row, name: maskName(row.name), contact: row.contact ? maskPhone(row.contact) : null });
     }
   } catch (err) {
     console.error('Update feedback status error', err);
@@ -526,7 +498,8 @@ app.patch('/api/feedback/:id/status', async (req, res) => {
   }
 });
 
-app.delete('/api/feedback/:id', async (req, res) => {
+// 刪除意見：需管理金鑰
+app.delete('/api/feedback/:id', requireAdmin, async (req, res) => {
   try {
     const id = req.params.id;
     if (usePg) {

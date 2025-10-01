@@ -5,19 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>花蓮光復鄉互助網</title>
 
-  
-  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.tailwindcss.com" crossorigin="anonymous"></script>
+  <!-- React / Babel / Tailwind -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
 
-  
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous"/>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/togeojson@0.16.0/dist/togeojson.umd.js" crossorigin="anonymous"></script>
+  <!-- Leaflet & toGeoJSON (KML 轉 GeoJSON) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/togeojson@0.16.0/dist/togeojson.umd.js"></script>
 
-  
-  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" crossorigin="anonymous"></script>
+  <!-- PapaParse for CSV parsing -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='8' fill='%23ef4444'/%3E%3C/svg%3E" />
   <style>
@@ -36,11 +36,50 @@
   <script type="text/babel">
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
-  
+  /* ---------------- 常數 / 公用 ---------------- */
   const RequestType = { VOLUNTEER: '志工人力', SUPPLY: '物資需求' };
-  const RequestStatus = { NEW:'新登記', IN_PROGRESS:'已前往', COMPLETED:'已完成' };
-  const uuid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const RequestStatus = { NEW:'新登記', IN_PROGRESS:'處理中', COMPLETED:'已完成', CANCELLED:'已取消' };
   const FeedbackStatus = { PENDING:'未處理', DOING:'處理中', DONE:'已完成' };
+
+  // 可選：從 <meta name="admin-token" content="..."> 或 localStorage 讀取管理金鑰
+  const ADMIN_TOKEN = (document.querySelector('meta[name="admin-token"]')?.content) || localStorage.getItem('ADMIN_TOKEN') || '';
+  const adminAuthHeader = ADMIN_TOKEN ? { Authorization: 'Bearer ' + ADMIN_TOKEN } : {};
+
+  // 對受保護端點自動夾帶 Authorization（若有 ADMIN_TOKEN）
+  (function patchFetchForAdmin(){
+    if (!ADMIN_TOKEN) return; // 無金鑰則不動
+    const orig = window.fetch;
+    window.fetch = function(input, init){
+      try {
+        const url = typeof input === 'string' ? input : (input?.url || '');
+        const method = (init?.method || 'GET').toUpperCase();
+        const isProtected = (
+          // 需求：更新狀態、刪除
+          (/^\/api\/requests\/[^/]+\/status/.test(url) && (method==='PATCH')) ||
+          (/^\/api\/requests\/[^/]+$/.test(url) && (method==='DELETE')) ||
+          (/^\/api\/requests\/[^/]+\/delete$/.test(url)) ||
+          // 意見：更新、刪除
+          (/^\/api\/feedback\/[^/]+\/status/.test(url) && (method==='PATCH')) ||
+          (/^\/api\/feedback\/[^/]+$/.test(url) && (method==='DELETE'))
+        );
+        if (isProtected) {
+          const headers = new Headers(init?.headers || {});
+          if (!headers.has('Authorization')) headers.set('Authorization', 'Bearer ' + ADMIN_TOKEN);
+          return orig(input, { ...(init||{}), headers });
+        }
+      } catch {}
+      return orig(input, init);
+    };
+  })();
+
+  // 前端遮蔽：僅顯示電話末 3-4 碼
+  function maskPhone(p){
+    const s = String(p||'').trim();
+    if(!s) return '';
+    if(s.length<=4) return '*'.repeat(Math.max(0,s.length-1)) + s.slice(-1);
+    const keep = s.length>=10 ? 4 : 3;
+    return s.slice(0, Math.max(0, s.length-keep)).replace(/\S/g,'*') + s.slice(-keep);
+  }
 
   const CENTER = { lat: 23.6697, lon: 121.4235 };
   const WAQI_TOKEN = 'demo';
@@ -53,6 +92,7 @@
   const GEO_CACHE_KEY = 'gf_geo_cache_v4';
   const GEO_FAIL_KEY  = 'gf_geo_fail_v1';
 
+  // 外部資源連結
   const EXTERNAL_LINKS = [
     { name:'光復災情整合網', url:'https://sites.google.com/view/guangfu250923/home?authuser=0' },
     { name:'救災列表地圖',   url:'https://tainan.olc.tw/p/guangfu250923/#db7bcdce-b986-4128-a9ab-98d1f6b14b36' },
@@ -60,6 +100,7 @@
     { name:'住宿點',         url:'https://sites.google.com/view/guangfu250923/%E7%8F%BE%E5%A0%B4%E4%BA%BA%E5%93%A1%E6%AC%B2%E6%8F%90%E4%BE%9B%E8%B3%87%E6%BA%90/hotel?authuser=0' },
   ];
 
+  // 手動庇護所（以地址定位）
   const SHELTER_PRESETS = [
     { name:'光復國小', address:'花蓮縣光復鄉中山路三段75號' },
     { name:'東豐部落', address:'花蓮縣光復鄉東富路5號' },
@@ -77,6 +118,7 @@
     { name:'大安活動中心', address:'花蓮縣光復鄉忠孝路23巷11號1樓' }
   ];
 
+  // CSV資料集
   const DATASETS = [
     {key:'baths',    label:'洗澡點',   color:'#0ea5e9', csv:'Data/光復志工洗澡點.csv', icon:'🚿'},
     {key:'shelters', label:'庇護所',   color:'#10b981', csv:'Data/庇護所資訊.csv',     icon:'🏛️'},
@@ -125,7 +167,7 @@
     return text ? JSON.parse(text) : null;
   }
 
-  
+  // ---- 地理編碼（只用地址） ----
   function normalizeAddress(addr) {
     let a = (addr || '').trim();
     if (!a) return '';
@@ -215,7 +257,7 @@
     return null;
   }
 
-  
+  /* ---------------- 標頭 ---------------- */
   const Header = () => (
     <header className="bg-white shadow-md ui-over">
       <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4">
@@ -232,7 +274,7 @@
     </header>
   );
 
-  
+  /* ---------------- 跑馬燈 ---------------- */
   const EmergencyTicker = () => {
     const [items, setItems] = useState([]);
     useEffect(() => {
@@ -269,7 +311,7 @@
     );
   };
 
-  
+  /* ---------------- 氣象 / 水位 ---------------- */
   const WeatherAlert = () => {
     const [data, setData] = useState(null);
     const load = async () => {
@@ -372,7 +414,7 @@
     );
   };
 
-  
+  /* ---------------- 官方 My Maps 彈窗 ---------------- */
   const DisasterMap = ({ isOpen, onClose }) => {
     if (!isOpen) return null;
     return (
@@ -394,7 +436,7 @@
     );
   };
 
-  
+  // 其他網站任務（Shovel）視窗
   const ShovelModal = ({ isOpen, onClose }) => {
     if (!isOpen) return null;
     return (
@@ -416,7 +458,7 @@
     );
   };
 
-  
+  /* ---------------- 地圖主面板 ---------------- */
   const LeafletMapPanel = ({requests}) => {
     const mapRef = useRef(null);
     const layerRef = useRef({
@@ -431,7 +473,7 @@
     const [showAddForm, setShowAddForm] = useState(false);
     const lastGeoRef = useRef(0); // geocode 節流
 
-    
+    // 初始地圖
     useEffect(() => {
       const m = L.map('gf-map', { center:[CENTER.lat, CENTER.lon], zoom:12 });
       mapRef.current = m;
@@ -439,7 +481,7 @@
         maxZoom: 19, attribution: '&copy; OpenStreetMap'
       }).addTo(m);
 
-      
+      // Layer groups
       layerRef.current.kml     = L.layerGroup().addTo(m);
       layerRef.current.user    = L.layerGroup().addTo(m);
       layerRef.current.req     = L.layerGroup().addTo(m);
@@ -466,7 +508,7 @@
       },()=>alert('定位失敗，請檢查權限'));
     }, []);
 
-    
+    // geocode 節流（1.5s/次）
     const geocodeWithThrottle = useCallback(async (q)=>{
       const now = Date.now();
       const wait = Math.max(0, 1500 - (now - lastGeoRef.current));
@@ -476,7 +518,7 @@
       return res;
     }, []);
 
-    
+    // 讀CSV並畫圖層（只用地址定位；沒地址就跳過）
     const drawCsvLayers = useCallback(async()=>{
       Object.values(layerRef.current.csv).forEach(g => g?.clearLayers());
       const newItems = [];
@@ -497,7 +539,7 @@
             const phone = tryPick(row, ['電話','聯絡電話','phone','tel']);
             const note = tryPick(row, ['備註','說明','描述','note','desc','內容','content']);
 
-            
+            // 以地址為主，沒有地址就不嘗試名稱定位
             let finalAddr = addressRaw;
             if ((!isFinite(lat) || !isFinite(lng)) && finalAddr) {
               const g = await geocodeWithThrottle(finalAddr);
@@ -513,7 +555,7 @@
             });
             const marker = L.marker([lat,lng],{icon}).addTo(layerRef.current.csv[ds.key]);
             const noteHtml = note ? `<div class="text-xs text-gray-600 mt-1 whitespace-pre-wrap">${note}</div>` : '';
-            const phoneHtml = phone ? `<div class="text-xs text-gray-600">📞 ${phone}</div>` : '';
+            const phoneHtml = phone ? `<div class="text-xs text-gray-600">📞 ${maskPhone(phone)}</div>` : '';
             const addrHtml = finalAddr ? `<div class="text-xs text-gray-600">📍 ${finalAddr}</div>` : '';
             marker.bindPopup(`<div class="text-sm">
               <div class="font-medium mb-1">${name} <span class="text-[10px] text-gray-500">（${ds.label}）</span></div>
@@ -527,11 +569,11 @@
       setList(prev => [...prev.filter(x=>x.source!=='CSV'), ...newItems]);
     }, [csvVisible, geocodeWithThrottle]);
 
-    
+    // 繪製手動庇護所（只用地址定位）
     const drawManualShelters = useCallback(async()=>{
       const g = layerRef.current.manualShelters; if (!g) return;
       g.clearLayers();
-      
+      // 先側欄佔位
       setList(prev => [
         ...prev.filter(x=>x.source!=='手動'),
         ...SHELTER_PRESETS.map(s=>({ id:'manual::'+s.name, source:'手動', name:s.name, address:s.address, latlng:null, layer:null, type:'庇護所', pending:true }))
@@ -563,7 +605,7 @@
       }
     }, [geocodeWithThrottle]);
 
-    
+    // 其他靜態資料
     const redrawStatic = useCallback(async()=>{
       if (!mapRef.current) return;
       const items = [];
@@ -574,7 +616,7 @@
       layerRef.current.user?.clearLayers();
       layerRef.current.req?.clearLayers();
 
-      
+      // KML（保護性載入）
       try {
         if (window.toGeoJSON) {
           const kmlTxt = await fetchKMLText();
@@ -600,9 +642,9 @@
         }
       } catch(e){ console.warn('KML parse fail', e); }
 
-      
+      // Shovel
       try {
-        
+        // 先走後端 proxy，避免 CORS；失敗再嘗試直連
         let r = await fetch(SHOVEL_JSON);
         if (!r.ok) r = await fetch('https://shovel-heroes.com/Map/data.json');
         let arr = [];
@@ -610,7 +652,7 @@
           try {
             arr = await r.json();
           } catch {
-            
+            // 某些伺服器以 text/plain 回傳，改用文字轉 JSON
             const txt = await r.text();
             try { arr = JSON.parse(txt); } catch {}
           }
@@ -628,7 +670,7 @@
         }
       } catch(e){ console.warn('Shovel load fail', e); }
 
-      
+      // 政府點位
       try {
         const r = await fetch(GOV_POINTS_URL);
         if (r.ok) {
@@ -661,7 +703,7 @@
         }
       } catch(e){ console.warn('gov points fail', e); }
 
-      
+      // 自建點
       try {
         const arr = JSON.parse(localStorage.getItem(LS_USER_ADDS)||'[]');
         arr.forEach(u=>{
@@ -675,7 +717,7 @@
         });
       } catch(e){}
 
-      
+      // 需求點
       try {
         const reqPts = (requests||[]).filter(r=>r.location?.lat && r.location?.lng);
         reqPts.forEach(r=>{
@@ -684,7 +726,7 @@
             .bindPopup(`<div class="text-sm">
               <div class="font-medium mb-1">${r.type}</div>
               <div class="mb-1 whitespace-pre-wrap">${r.description||''}</div>
-              <div class="text-xs text-gray-500 mb-2">聯絡：${r.contactPerson||''} / ${r.contactPhone||''}</div>
+              <div class="text-xs text-gray-500 mb-2">聯絡：${r.contactPerson||''} / ${maskPhone(r.contactPhone)||''}</div>
               <a target="_blank" rel="noopener" class="text-blue-600 underline text-xs" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}">🧭 導航</a>
             </div>`);
           items.push({ source:'需求', name:r.type, address:r.address||'', desc:r.description||'', latlng:L.latLng(lat,lng), layer:mk, type:r.type });
@@ -699,7 +741,7 @@
 
     useEffect(() => { redrawStatic(); drawCsvLayers(); drawManualShelters(); }, [drawCsvLayers, redrawStatic, drawManualShelters]);
 
-    
+    // 列表篩選
     const filteredList = useMemo(()=>{
       return list
         .slice()
@@ -717,7 +759,7 @@
         });
     }, [list, filterKey, search]);
 
-    
+    // 控制CSV layer顯示
     const toggleCsv = (k) => {
       setCsvVisible(v => {
         const next = { ...v, [k]: !v[k] };
@@ -801,7 +843,7 @@
                 ))}
                 {filteredList.length===0 && <div className="text-xs text-gray-500">沒有符合條件的點位</div>}
               </div>
-              
+              {/* 手機寬度時顯示外部連結 */}
               <div className="mt-4 flex md:hidden flex-wrap gap-2">
                 {EXTERNAL_LINKS.map(l=>(
                   <a key={l.url} href={l.url} target="_blank" rel="noopener" className="text-xs px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700">{l.name}</a>
@@ -828,7 +870,7 @@
                   .bindPopup(`<div class="text-sm">
                     <div class="font-medium mb-1">${name}</div>
                     ${address?`<div class='text-xs text-gray-600'>📍 ${address}</div>`:''}
-                    ${phone?`<div class='text-xs text-gray-600'>📞 ${phone}</div>`:''}
+                    ${phone?`<div class='text-xs text-gray-600'>📞 ${maskPhone(phone)}</div>`:''}
                     ${note?`<div class='text-xs text-gray-600 whitespace-pre-wrap mt-1'>${note}</div>`:''}
                     <a class="text-blue-600 underline text-xs" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${plat},${plng}">🧭 導航</a>
                   </div>`);
@@ -852,7 +894,7 @@
     return await r.text();
   }
 
-  
+  // 新增點位表單
   const AddPointForm = ({ isOpen, onClose, onSubmit }) => {
     const [name, setName] = useState('');
     const [category, setCategory] = useState('其他');
@@ -936,6 +978,7 @@
     );
   };
 
+  /* ---------------- 需求 / 表單 ---------------- */
   const VolunteerSignup = ({ onSubmit }) => {
     const [name,setName]=useState('');
     const [phone,setPhone]=useState('');
@@ -988,7 +1031,7 @@
         if (Array.isArray(req.volunteers)) base.volunteerCount += req.volunteers.length;
       });
       return base;
-    }, [requests]);
+    }, [requests])
 
     const cards = [
       { label: '新登記', value: summary.newCount, accent: 'bg-blue-50 text-blue-700 border border-blue-100', icon: '🆕' },
@@ -1014,13 +1057,6 @@
 
   const RequestCard = ({ request, onUpdateStatus, onAddVolunteer, onDelete }) => {
     const { id, type, status, contactPerson, contactPhone, address, description, createdAt } = request;
-    const maskPhone = (v)=>{
-      if (typeof v !== 'string') return v;
-      const digits = v.replace(/\D/g,'');
-      if (digits.length < 7) return v.replace(/\d(?=\d{2})/g,'*');
-      let seen = 0, total = digits.length;
-      return v.replace(/\d/g,(m)=>{ seen++; return (seen<=2||seen>total-3)?m:'＊'; });
-    };
     const [updating, setUpdating] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [actionError, setActionError] = useState('');
@@ -1114,7 +1150,7 @@
               {latestVolunteer ? (
                 <div className="text-xs text-slate-500 text-right leading-relaxed">
                   <div>最新前往：{latestVolunteer.name}</div>
-                  <div className="break-all">{latestVolunteer.phone}</div>
+                  <div className="break-all">{maskPhone(latestVolunteer.phone)}</div>
                   {latestVolunteer.note ? <div className="italic text-slate-400">{latestVolunteer.note}</div> : null}
                 </div>
               ) : (
@@ -1164,19 +1200,9 @@
     );
   };
 
-  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, onDelete, activeFilter, searchKeyword, statusFilter }) => {
+  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, onDelete, activeFilter, searchKeyword }) => {
     const [view, setView] = useState('cards'); // 'cards' | 'list'
-    const filtered = requests
-      .filter(r => activeFilter==='全部' ? true : r.type===activeFilter)
-      .filter(r => {
-        if (statusFilter==='全部狀態') return true;
-        const volCount = Array.isArray(r.volunteers)? r.volunteers.length : 0;
-        if (statusFilter==='未認領') return r.status===RequestStatus.NEW && volCount===0;
-        if (statusFilter==='已前往') return r.status===RequestStatus.IN_PROGRESS;
-        if (statusFilter==='已完成') return r.status===RequestStatus.COMPLETED;
-        if (statusFilter==='可清理') return (r.status===RequestStatus.IN_PROGRESS || r.status===RequestStatus.NEW) && volCount>0;
-        return true;
-      })
+    const filtered = requests.filter(r => activeFilter==='全部' ? true : r.type===activeFilter)
       .filter(r=>{
         const q = (searchKeyword||'').trim().toLowerCase();
         if (!q) return true;
@@ -1229,7 +1255,7 @@
                       <td className="p-3 whitespace-nowrap">{r.type}</td>
                       <td className="p-3 whitespace-nowrap">{r.status}</td>
                       <td className="p-3 whitespace-nowrap">{r.contactPerson}</td>
-                      <td className="p-3 whitespace-nowrap">{r.contactPhone}</td>
+                      <td className="p-3 whitespace-nowrap">{maskPhone(r.contactPhone)}</td>
                       <td className="p-3">{r.address}</td>
                       <td className="p-3">{r.description}</td>
                       <td className="p-3 whitespace-nowrap text-right">
@@ -1270,7 +1296,7 @@
     const [submitting, setSubmitting] = useState(false);
     if (!isOpen) return null;
 
-    
+    // 定位自己的即時位置
     const getCurrentLocation = () => {
       if (!navigator.geolocation) { setError('您的瀏覽器不支援定位功能'); return; }
       setGettingLocation(true);
@@ -1306,7 +1332,7 @@
       }
     };
 
-    
+    // 讀取/壓縮圖片為 dataURL（max 邊 1280, JPEG 品質0.85）
     const handleFile = async (file) => {
       if (!file) return setPhoto(null);
       const img = new Image();
@@ -1407,326 +1433,7 @@
     );
   };
 
-  
-  const App = () => {
-    const [requests, setRequests] = useState([]);
-    const [isFormOpen, setIsFormOpen] = useState(false);
-    const [isShovelOpen, setIsShovelOpen] = useState(false);
-    const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
-    const [feedbackList, setFeedbackList] = useState([]);
-  const [activeFilter, setActiveFilter] = useState('全部'); // 類型篩選
-  const statusFilters = ['全部狀態','未認領','已前往','已完成','可清理'];
-  const [statusFilter, setStatusFilter] = useState('全部狀態');
-  const [loadingRequests, setLoadingRequests] = useState(true);
-  const [searchKeyword, setSearchKeyword] = useState('');
-    const [requestError, setRequestError] = useState(null);
-
-  
-    const maskContact = (c)=>{
-      if (!c) return c;
-      const s = String(c);
-      const digits = s.replace(/\D/g,'');
-      if (digits.length >= 7){
-        let seen = 0, total = digits.length;
-        return s.replace(/\d/g,(m)=>{ seen++; return (seen<=2 || seen>total-3) ? m : '＊'; });
-      }
-      if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s)){
-        const [n,d] = s.split('@');
-        return `${(n||'').slice(0,2)}***@${d}`;
-      }
-      return s.slice(0,2) + '＊＊＊';
-    };
-
-    const fetchRequests = useCallback(async () => {
-      setLoadingRequests(true);
-      setRequestError(null);
-      try {
-        const headers = {};
-        const adminToken = localStorage.getItem('admin_token');
-        if (adminToken) headers['x-admin-token'] = adminToken;
-        const res = await fetch('/api/requests', { headers });
-        const data = await parseJSONResponse(res, '需求列表載入失敗');
-        setRequests(Array.isArray(data) ? data : []);
-      } catch (err) {
-        console.error('fetch requests error', err);
-        setRequestError(err?.message || '需求列表載入失敗');
-      } finally {
-        setLoadingRequests(false);
-      }
-    }, []);
-
-    useEffect(()=>{ fetchRequests(); }, [fetchRequests]);
-
-    
-    useEffect(() => {
-      const btn = document.getElementById('open-feedback');
-      if (!btn) return;
-      const onClick = ()=>{ setIsFeedbackOpen(true); loadFeedback(); };
-      btn.addEventListener('click', onClick);
-      return ()=> btn.removeEventListener('click', onClick);
-    }, []);
-
-    const addRequest = useCallback(async (data)=>{
-      try {
-        
-        let safeName = (data.contactPerson||'').trim();
-        if (/^[\u4e00-\u9fa5]{2,4}$/.test(safeName)) {
-          safeName = safeName.slice(0,1) + '○';
-        }
-        const payload = { ...data, contactPerson: safeName };
-        const res = await fetch('/api/requests', {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify(payload)
-        });
-        const created = await parseJSONResponse(res, '新增需求失敗');
-        setRequests(prev => [created, ...prev]);
-      } catch (err) {
-        console.error('add request failed', err);
-        throw err;
-      }
-    }, []);
-
-    const updateStatus = useCallback(async (id, status)=>{
-      try {
-        const res = await fetch(`/api/requests/${id}/status`, {
-          method:'PATCH',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ status })
-        });
-        const updated = await parseJSONResponse(res, '狀態更新失敗');
-        setRequests(prev => prev.map(r => r.id===id ? updated : r));
-      } catch (err) {
-        console.error('update status failed', err);
-        throw err;
-      }
-    }, []);
-
-    const addVolunteer = useCallback(async (id, vol)=>{
-      try {
-        const res = await fetch(`/api/requests/${id}/volunteers`, {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify(vol)
-        });
-        const updated = await parseJSONResponse(res, '志工報名失敗');
-        setRequests(prev => prev.map(r => r.id===id ? updated : r));
-      } catch (err) {
-        console.error('add volunteer failed', err);
-        throw err;
-      }
-    }, []);
-
-    const deleteRequest = useCallback(async (id)=>{
-      try {
-        
-        let res = await fetch(`/api/requests/${id}`, { method: 'DELETE' });
-        if (!res.ok) {
-          
-          res = await fetch(`/api/requests/${id}/delete`, { method: 'POST' });
-        }
-        await parseJSONResponse(res, '刪除需求失敗');
-        setRequests(prev => prev.filter(r => r.id !== id));
-      } catch (err) {
-        console.error('delete request failed', err);
-        throw err;
-      }
-    }, []);
-
-    const filters = ['全部', RequestType.VOLUNTEER, RequestType.SUPPLY];
-
-    
-    const loadFeedback = useCallback(async ()=>{
-      try {
-        const res = await fetch('/api/feedback');
-        const data = await parseJSONResponse(res, '意見列表載入失敗');
-        setFeedbackList(Array.isArray(data) ? data : []);
-      } catch (e) { console.error(e); }
-    }, []);
-
-    
-    useEffect(()=>{ loadFeedback(); }, [loadFeedback]);
-
-    const addFeedback = useCallback(async (payload)=>{
-      const res = await fetch('/api/feedback', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-      const created = await parseJSONResponse(res, '送出意見失敗');
-      setFeedbackList(prev=>[created, ...prev]);
-    }, []);
-
-    const updateFeedbackStatus = useCallback(async (id, status)=>{
-      const res = await fetch(`/api/feedback/${id}/status`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status}) });
-      const updated = await parseJSONResponse(res, '更新意見狀態失敗');
-      setFeedbackList(prev=> prev.map(f => f.id===id ? updated : f));
-    }, []);
-
-    const deleteFeedback = useCallback(async (id)=>{
-      let res = await fetch(`/api/feedback/${id}`, { method:'DELETE' });
-      await parseJSONResponse(res, '刪除意見失敗');
-      setFeedbackList(prev=> prev.filter(f=>f.id!==id));
-    }, []);
-
-    return (
-      <div className="min-h-screen bg-slate-50">
-        <EmergencyTicker/>
-        <Header/>
-        <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="space-y-6">
-            
-
-            
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 ui-over flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-              <div className="text-amber-900 text-sm">
-                <div className="font-semibold mb-0.5">其他網站救災任務（Shovel Heroes）</div>
-                <div className="opacity-80">社群平台彙整的任務列表；若需要外部支援或參考，點擊右側按鈕查看。</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={()=>setIsShovelOpen(true)} className="px-4 py-2 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold">🌐 立即查看</button>
-                <a href="https://shovel-heroes.com/" target="_blank" rel="noopener" className="px-4 py-2 rounded-md border border-amber-300 text-amber-900 bg-white text-sm">在新分頁開啟</a>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 ui-over">
-              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="flex bg-slate-200 rounded-lg p-1">
-                    {filters.map(f=>(
-                      <button
-                        key={f}
-                        onClick={()=>setActiveFilter(f)}
-                        className={`w-full sm:w-auto px-4 py-2 text-sm font-semibold rounded-md ${activeFilter===f ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-slate-300'}`}
-                      >
-                        {f}
-                      </button>
-                    ))}
-                  </div>
-                  
-                  <div className="flex bg-slate-200 rounded-lg p-1">
-                    {statusFilters.map(s => (
-                      <button
-                        key={s}
-                        onClick={()=>setStatusFilter(s)}
-                        className={`w-full sm:w-auto px-3 py-2 text-sm font-semibold rounded-md ${statusFilter===s ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-slate-300'}`}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="hidden lg:block text-xs text-slate-400">
-                    依照需求類型與完成狀態自動排序，最近更新的任務會在前方顯示。
-                  </div>
-                </div>
-                <div className="flex gap-2 w-full lg:w-auto">
-                  <button
-                    onClick={()=>setIsFormOpen(true)}
-                    className="flex-1 lg:flex-none px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 flex items-center justify-center"
-                  >
-                    <span className="mr-2">➕</span>📍 登記災情需求
-                  </button>
-                  <button
-                    onClick={()=>setIsShovelOpen(true)}
-                    className="flex-1 lg:flex-none px-5 py-2.5 bg-amber-600 text-white font-semibold rounded-lg shadow-md hover:bg-amber-700 flex items-center justify-center"
-                    title="查看其他網站的救災任務"
-                  >
-                    🌐 其他網站任務
-                  </button>
-                  <a
-                    href="/qr.html?url=https%3A%2F%2Ffuxing.onrender.com%2Fsimple.html"
-                    target="_blank"
-                    rel="noopener"
-                    className="flex-1 lg:flex-none px-5 py-2.5 bg-emerald-600 text-white font-semibold rounded-lg shadow-md hover:bg-emerald-700 flex items-center justify-center"
-                    title="開啟 QR Code 頁面，支援下載/列印"
-                  >
-                    🔗 取得 QR 碼
-                  </a>
-                </div>
-              </div>
-              
-              <div className="mt-4">
-                <input
-                  type="text"
-                  value={searchKeyword}
-                  onChange={(e)=>setSearchKeyword(e.target.value)}
-                  placeholder="搜尋任務（描述／地址／聯絡人／電話）"
-                  className="w-full px-4 py-2 border rounded-md text-sm"
-                />
-              </div>
-            </div>
-
-            {requestError && (
-              <div className="w-full text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <span>{requestError}</span>
-                <button onClick={()=>fetchRequests()} className="inline-flex items-center justify-center px-3 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700">重新嘗試</button>
-              </div>
-            )}
-
-            {loadingRequests ? (
-              <div className="py-12 text-center text-sm text-slate-500 bg-white rounded-xl border border-slate-200">需求列表載入中…</div>
-            ) : (
-              <RequestDashboard
-                requests={requests}
-                onUpdateStatus={updateStatus}
-                onAddVolunteer={addVolunteer}
-                onDelete={deleteRequest}
-                activeFilter={activeFilter}
-                searchKeyword={searchKeyword}
-                statusFilter={statusFilter}
-              />
-            )}
-
-            
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 ui-over">
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="text-lg font-bold">💬 公開留言板</h3>
-                <div className="flex gap-2">
-                  <button onClick={()=>{ setIsFeedbackOpen(true); loadFeedback(); }} className="px-3 py-1.5 text-sm rounded bg-purple-600 text-white hover:bg-purple-700">新增意見</button>
-                  <button onClick={()=>loadFeedback()} className="px-3 py-1.5 text-sm rounded border">重新整理</button>
-                </div>
-              </div>
-              <div className="mt-3 space-y-3">
-                {(!feedbackList || feedbackList.length===0) ? (
-                  <div className="text-sm text-slate-500">目前尚無留言。</div>
-                ) : feedbackList.map(item => {
-                  const statusClass = item.status==='未處理' ? 'bg-slate-200 text-slate-700' : item.status==='處理中' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800';
-                  return (
-                    <div key={item.id} className="border rounded p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-medium text-slate-800">{item.name || '匿名'}</div>
-                          {item.contact && <div className="text-xs text-slate-500">📞 {maskContact(item.contact)}</div>}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className={`px-2 py-0.5 rounded text-xs ${statusClass}`}>{item.status}</span>
-                          <button onClick={()=>deleteFeedback(item.id)} className="text-red-600 text-xs">刪除</button>
-                        </div>
-                      </div>
-                      <div className="text-sm whitespace-pre-wrap mt-1">{item.message}</div>
-                      <div className="flex gap-2 justify-end mt-2">
-                        <button onClick={()=>updateFeedbackStatus(item.id,'未處理')} className="px-2 py-1 text-xs border rounded">未處理</button>
-                        <button onClick={()=>updateFeedbackStatus(item.id,'處理中')} className="px-2 py-1 text-xs border rounded">處理中</button>
-                        <button onClick={()=>updateFeedbackStatus(item.id,'已完成')} className="px-2 py-1 text-xs border rounded">已完成</button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            <LeafletMapPanel requests={requests}/>
-            
-            <WeatherAlert/>
-          </div>
-        </main>
-        <RequestForm isOpen={isFormOpen} onClose={()=>setIsFormOpen(false)} onSubmit={addRequest}/>
-        <ShovelModal isOpen={isShovelOpen} onClose={()=>setIsShovelOpen(false)} />
-        <FeedbackModal isOpen={isFeedbackOpen} onClose={()=>setIsFeedbackOpen(false)} list={feedbackList} onCreate={addFeedback} onUpdateStatus={updateFeedbackStatus} onDelete={deleteFeedback}/>
-      </div>
-    );
-  };
-
-  ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
-  </script>
-  <script type="text/babel">
-  
+  /* ---------------- 意見面板元件 ---------------- */
   const FeedbackModal = ({ isOpen, onClose, list, onCreate, onUpdateStatus, onDelete }) => {
     const [name,setName]=React.useState('');
     const [contact,setContact]=React.useState('');
@@ -1741,18 +1448,6 @@
       onCreate({ name, contact, message }).then(()=>{ setName(''); setContact(''); setMessage(''); }).catch(err=>{
         setError(err?.message || '送出失敗');
       });
-    };
-
-    const maskContact = (c)=>{
-      if (!c) return c;
-      const digits = String(c).replace(/\D/g,'');
-      if (digits.length>=7){
-        let seen=0,total=digits.length;return String(c).replace(/\d/g,(m)=>{seen++;return (seen<=2||seen>total-3)?m:'＊';});
-      }
-      if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(c))) {
-        const [n,d]=String(c).split('@');return `${(n||'').slice(0,2)}***@${d}`;
-      }
-      return String(c).slice(0,2)+'＊＊＊';
     };
 
     const StatusPill = ({v}) => (
@@ -1785,9 +1480,9 @@
                       <button onClick={()=>onDelete(item.id)} className="text-red-600 text-xs">刪除</button>
                     </div>
                   </div>
-                  {item.contact && <div className="text-xs text-slate-500">📞 {maskContact(item.contact)}</div>}
+                  {item.contact && <div className="text-xs text-slate-500">📞 {item.contact}</div>}
                   <div className="text-sm whitespace-pre-wrap">{item.message}</div>
-                  <div className="flex gap-2 justify-end">
+                  <div className="flex gap-2 justify-end mt-2">
                     <button onClick={()=>onUpdateStatus(item.id,'未處理')} className="px-2 py-1 text-xs border rounded">未處理</button>
                     <button onClick={()=>onUpdateStatus(item.id,'處理中')} className="px-2 py-1 text-xs border rounded">處理中</button>
                     <button onClick={()=>onUpdateStatus(item.id,'已完成')} className="px-2 py-1 text-xs border rounded">已完成</button>
