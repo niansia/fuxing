@@ -30,7 +30,6 @@
 <body class="bg-slate-50">
   <div id="root"></div>
 
-  <!-- 先行錯誤攔截（在 Babel 腳本之前），避免白畫面沒有訊息 -->
   <script>
     (function(){
       var mount = document.getElementById('root');
@@ -77,24 +76,20 @@
     return v || RequestStatus.NEW;
   }
 
-  // 可選：從 <meta name="admin-token" content="..."> 或 localStorage 讀取管理金鑰
   const ADMIN_TOKEN = (document.querySelector('meta[name="admin-token"]')?.content) || localStorage.getItem('ADMIN_TOKEN') || '';
   const adminAuthHeader = ADMIN_TOKEN ? { Authorization: 'Bearer ' + ADMIN_TOKEN } : {};
 
-  // 對受保護端點自動夾帶 Authorization（若有 ADMIN_TOKEN）
   (function patchFetchForAdmin(){
-    if (!ADMIN_TOKEN) return; // 無金鑰則不動
+    if (!ADMIN_TOKEN) return;
     const orig = window.fetch;
     window.fetch = function(input, init){
       try {
         const url = typeof input === 'string' ? input : (input?.url || '');
         const method = (init?.method || 'GET').toUpperCase();
         const isProtected = (
-          // 需求：更新狀態、刪除
           (/^\/api\/requests\/[^/]+\/status/.test(url) && (method==='PATCH')) ||
           (/^\/api\/requests\/[^/]+$/.test(url) && (method==='DELETE')) ||
           (/^\/api\/requests\/[^/]+\/delete$/.test(url)) ||
-          // 意見：更新、刪除
           (/^\/api\/feedback\/[^/]+\/status/.test(url) && (method==='PATCH')) ||
           (/^\/api\/feedback\/[^/]+$/.test(url) && (method==='DELETE'))
         );
@@ -108,7 +103,6 @@
     };
   })();
 
-  // 前端遮蔽：僅顯示電話末 3-4 碼
   function maskPhone(p){
     const s = String(p||'').trim();
     if(!s) return '';
@@ -128,7 +122,6 @@
   const GEO_CACHE_KEY = 'gf_geo_cache_v4';
   const GEO_FAIL_KEY  = 'gf_geo_fail_v1';
 
-  // 外部資源連結
   const EXTERNAL_LINKS = [
     { name:'光復災情整合網', url:'https://sites.google.com/view/guangfu250923/home?authuser=0' },
     { name:'救災列表地圖',   url:'https://tainan.olc.tw/p/guangfu250923/#db7bcdce-b986-4128-a9ab-98d1f6b14b36' },
@@ -136,7 +129,6 @@
     { name:'住宿點',         url:'https://sites.google.com/view/guangfu250923/%E7%8F%BE%E5%A0%B4%E4%BA%BA%E5%93%A1%E6%AC%B2%E6%8F%90%E4%BE%9B%E8%B3%87%E6%BA%90/hotel?authuser=0' },
   ];
 
-  // 手動庇護所（以地址定位）
   const SHELTER_PRESETS = [
     { name:'光復國小', address:'花蓮縣光復鄉中山路三段75號' },
     { name:'東豐部落', address:'花蓮縣光復鄉東富路5號' },
@@ -154,7 +146,6 @@
     { name:'大安活動中心', address:'花蓮縣光復鄉忠孝路23巷11號1樓' }
   ];
 
-  // CSV資料集
   const DATASETS = [
     {key:'baths',    label:'洗澡點',   color:'#0ea5e9', csv:'Data/光復志工洗澡點.csv', icon:'🚿'},
     {key:'shelters', label:'庇護所',   color:'#10b981', csv:'Data/庇護所資訊.csv',     icon:'🏛️'},
@@ -165,7 +156,6 @@
 
   const LS_USER_ADDS  = 'gf_user_adds_v1';
 
-  // CSV欄位工具
   const tryPick = (row, names) => {
     for (const n of names) {
       const hit = Object.keys(row).find(k => k.trim().toLowerCase() === n.toLowerCase());
@@ -203,7 +193,6 @@
     return text ? JSON.parse(text) : null;
   }
 
-  // ---- 地理編碼（只用地址） ----
   function normalizeAddress(addr) {
     let a = (addr || '').trim();
     if (!a) return '';
@@ -293,7 +282,6 @@
     return null;
   }
 
-  /* ---------------- 標頭 ---------------- */
   const Header = () => (
     <header className="bg-white shadow-md ui-over">
       <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4">
@@ -310,7 +298,6 @@
     </header>
   );
 
-  /* ---------------- 跑馬燈 ---------------- */
   const EmergencyTicker = () => {
     const [items, setItems] = useState([]);
     useEffect(() => {
@@ -347,7 +334,6 @@
     );
   };
 
-  /* ---------------- 氣象 / 水位 ---------------- */
   const WeatherAlert = () => {
     const [data, setData] = useState(null);
     const load = async () => {
@@ -450,7 +436,6 @@
     );
   };
 
-  /* ---------------- 官方 My Maps 彈窗 ---------------- */
   const DisasterMap = ({ isOpen, onClose }) => {
     if (!isOpen) return null;
     return (
@@ -472,7 +457,6 @@
     );
   };
 
-  // 其他網站任務（Shovel）視窗
   const ShovelModal = ({ isOpen, onClose }) => {
     if (!isOpen) return null;
     return (
@@ -494,7 +478,6 @@
     );
   };
 
-  /* ---------------- 地圖主面板 ---------------- */
   const LeafletMapPanel = ({requests}) => {
     const mapRef = useRef(null);
     const layerRef = useRef({
@@ -507,9 +490,8 @@
     const [showOfficial, setShowOfficial] = useState(false);
     const [csvVisible, setCsvVisible] = useState({ baths:true, shelters:true, lodging:true, medical:true, mental:true });
     const [showAddForm, setShowAddForm] = useState(false);
-    const lastGeoRef = useRef(0); // geocode 節流
+    const lastGeoRef = useRef(0);
 
-    // 初始地圖
     useEffect(() => {
       const m = L.map('gf-map', { center:[CENTER.lat, CENTER.lon], zoom:12 });
       mapRef.current = m;
@@ -517,7 +499,6 @@
         maxZoom: 19, attribution: '&copy; OpenStreetMap'
       }).addTo(m);
 
-      // Layer groups
       layerRef.current.kml     = L.layerGroup().addTo(m);
       layerRef.current.user    = L.layerGroup().addTo(m);
       layerRef.current.req     = L.layerGroup().addTo(m);
@@ -544,7 +525,6 @@
       },()=>alert('定位失敗，請檢查權限'));
     }, []);
 
-    // geocode 節流（1.5s/次）
     const geocodeWithThrottle = useCallback(async (q)=>{
       const now = Date.now();
       const wait = Math.max(0, 1500 - (now - lastGeoRef.current));
@@ -554,7 +534,6 @@
       return res;
     }, []);
 
-    // 讀CSV並畫圖層（只用地址定位；沒地址就跳過）
     const drawCsvLayers = useCallback(async()=>{
       Object.values(layerRef.current.csv).forEach(g => g?.clearLayers());
       const newItems = [];
@@ -575,7 +554,6 @@
             const phone = tryPick(row, ['電話','聯絡電話','phone','tel']);
             const note = tryPick(row, ['備註','說明','描述','note','desc','內容','content']);
 
-            // 以地址為主，沒有地址就不嘗試名稱定位
             let finalAddr = addressRaw;
             if ((!isFinite(lat) || !isFinite(lng)) && finalAddr) {
               const g = await geocodeWithThrottle(finalAddr);
@@ -605,11 +583,9 @@
       setList(prev => [...prev.filter(x=>x.source!=='CSV'), ...newItems]);
     }, [csvVisible, geocodeWithThrottle]);
 
-    // 繪製手動庇護所（只用地址定位）
     const drawManualShelters = useCallback(async()=>{
       const g = layerRef.current.manualShelters; if (!g) return;
       g.clearLayers();
-      // 先側欄佔位
       setList(prev => [
         ...prev.filter(x=>x.source!=='手動'),
         ...SHELTER_PRESETS.map(s=>({ id:'manual::'+s.name, source:'手動', name:s.name, address:s.address, latlng:null, layer:null, type:'庇護所', pending:true }))
@@ -641,7 +617,6 @@
       }
     }, [geocodeWithThrottle]);
 
-    // 其他靜態資料
     const redrawStatic = useCallback(async()=>{
       if (!mapRef.current) return;
       const items = [];
@@ -652,7 +627,6 @@
       layerRef.current.user?.clearLayers();
       layerRef.current.req?.clearLayers();
 
-      // KML（保護性載入）
       try {
         if (window.toGeoJSON) {
           const kmlTxt = await fetchKMLText();
@@ -678,9 +652,7 @@
         }
       } catch(e){ console.warn('KML parse fail', e); }
 
-      // Shovel
       try {
-        // 先走後端 proxy，避免 CORS；失敗再嘗試直連
         let r = await fetch(SHOVEL_JSON);
         if (!r.ok) r = await fetch('https://shovel-heroes.com/Map/data.json');
         let arr = [];
@@ -688,7 +660,6 @@
           try {
             arr = await r.json();
           } catch {
-            // 某些伺服器以 text/plain 回傳，改用文字轉 JSON
             const txt = await r.text();
             try { arr = JSON.parse(txt); } catch {}
           }
@@ -706,7 +677,6 @@
         }
       } catch(e){ console.warn('Shovel load fail', e); }
 
-      // 政府點位
       try {
         const r = await fetch(GOV_POINTS_URL);
         if (r.ok) {
@@ -739,7 +709,6 @@
         }
       } catch(e){ console.warn('gov points fail', e); }
 
-      // 自建點
       try {
         const arr = JSON.parse(localStorage.getItem(LS_USER_ADDS)||'[]');
         arr.forEach(u=>{
@@ -753,7 +722,6 @@
         });
       } catch(e){}
 
-      // 需求點
       try {
         const reqPts = (requests||[]).filter(r=>r.location?.lat && r.location?.lng);
         reqPts.forEach(r=>{
@@ -777,7 +745,6 @@
 
     useEffect(() => { redrawStatic(); drawCsvLayers(); drawManualShelters(); }, [drawCsvLayers, redrawStatic, drawManualShelters]);
 
-    // 列表篩選
     const filteredList = useMemo(()=>{
       return list
         .slice()
@@ -795,7 +762,6 @@
         });
     }, [list, filterKey, search]);
 
-    // 控制CSV layer顯示
     const toggleCsv = (k) => {
       setCsvVisible(v => {
         const next = { ...v, [k]: !v[k] };
@@ -930,7 +896,6 @@
     return await r.text();
   }
 
-  // 新增點位表單
   const AddPointForm = ({ isOpen, onClose, onSubmit }) => {
     const [name, setName] = useState('');
     const [category, setCategory] = useState('其他');
@@ -1014,7 +979,6 @@
     );
   };
 
-  /* ---------------- 需求 / 表單 ---------------- */
   const VolunteerSignup = ({ onSubmit }) => {
     const [name,setName]=useState('');
     const [phone,setPhone]=useState('');
@@ -1337,7 +1301,6 @@
     const [submitting, setSubmitting] = useState(false);
     if (!isOpen) return null;
 
-    // 定位自己的即時位置
     const getCurrentLocation = () => {
       if (!navigator.geolocation) { setError('您的瀏覽器不支援定位功能'); return; }
       setGettingLocation(true);
@@ -1373,7 +1336,6 @@
       }
     };
 
-    // 讀取/壓縮圖片為 dataURL（max 邊 1280, JPEG 品質0.85）
     const handleFile = async (file) => {
       if (!file) return setPhoto(null);
       const img = new Image();
@@ -1474,7 +1436,6 @@
     );
   };
 
-  /* ---------------- 意見面板元件 ---------------- */
   const FeedbackModal = ({ isOpen, onClose, list, onCreate, onUpdateStatus, onDelete }) => {
     const [name,setName]=React.useState('');
     const [contact,setContact]=React.useState('');
@@ -1537,14 +1498,13 @@
     );
   };
 
-  /* ---------------- App 主組件 ---------------- */
   const App = () => {
     const [requests, setRequests] = useState([]);
     const [isFormOpen, setIsFormOpen] = useState(false);
     const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
     const [feedbackList, setFeedbackList] = useState([]);
-    const [activeFilter, setActiveFilter] = useState('全部'); // 類型
-    const [statusFilter, setStatusFilter] = useState('全部'); // 狀態
+    const [activeFilter, setActiveFilter] = useState('全部');
+    const [statusFilter, setStatusFilter] = useState('全部');
     const [searchKeyword, setSearchKeyword] = useState('');
     const [loadingRequests, setLoadingRequests] = useState(true);
     const [requestError, setRequestError] = useState(null);
@@ -1566,7 +1526,6 @@
 
     useEffect(()=>{ fetchRequests(); }, [fetchRequests]);
 
-    // 綁定 Header 的『網站意見』按鈕
     useEffect(() => {
       const btn = document.getElementById('open-feedback');
       if (!btn) return;
@@ -1612,7 +1571,6 @@
       setRequests(prev => prev.filter(r => r.id !== id));
     }, []);
 
-    // ---- Feedback APIs ----
     const loadFeedback = useCallback(async ()=>{
       try {
         const res = await fetch('/api/feedback');
@@ -1687,7 +1645,6 @@
     );
   };
 
-  // 在生產環境避免白畫面：把錯誤顯示在頁面上，並確保 Babel 已正確轉譯
   (function attachGlobalErrorHandlers(){
     const mount = document.getElementById('root');
     function showErr(prefix, err){
