@@ -14,9 +14,34 @@ const { Pool } = require('pg');
 // ---------------------- 基本設定 ----------------------
 const app = express();
 const port = process.env.PORT || 5001;
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || null; // 供管理端查看完整資料用
 
 app.use(cors());
 app.use(express.json());
+
+// ---- Security Headers ----
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  res.setHeader('Permissions-Policy', 'geolocation=(self), microphone=(), camera=()');
+  const csp = [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net https://cdn.tailwindcss.com",
+    "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://cdn.tailwindcss.com",
+    "img-src 'self' data: blob: https://*",
+    "connect-src 'self' https://api.open-meteo.com https://api.waqi.info https://opendata.wra.gov.tw https://shovel-heroes.com https://tainan.olc.tw https://nominatim.openstreetmap.org https://*.tile.openstreetmap.org",
+    "font-src 'self' data:",
+    "frame-src 'self' https://shovel-heroes.com",
+    "frame-ancestors 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; ');
+  res.setHeader('Content-Security-Policy', csp);
+  next();
+});
 
 // 健康檢查
 app.get('/health', (_, res) => res.send('ok'));
@@ -24,6 +49,20 @@ app.get('/health', (_, res) => res.send('ok'));
 // （新增）根路由導到 simple.html，方便直接開站
 app.get('/', (req, res) => {
   res.redirect('/simple.html');
+});
+
+// ---- Admin session (HttpOnly cookie) ----
+app.post('/api/admin/login', async (req, res) => {
+  const { token } = req.body || {};
+  if (!ADMIN_TOKEN) return res.status(501).json({ error: 'ADMIN_TOKEN 未設定' });
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ error: '認證失敗' });
+  res.setHeader('Set-Cookie', `adm=1; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${60*60*4}`);
+  return res.json({ success: true });
+});
+
+app.post('/api/admin/logout', async (_req, res) => {
+  res.setHeader('Set-Cookie', 'adm=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0');
+  return res.json({ success: true });
 });
 
 // ---------------------- Postgres 設定 ----------------------
@@ -186,9 +225,66 @@ const serializeRequestRow = (row, volunteers = []) => ({
   }))
 });
 
+// ===== 資安/隱私：遮蔽工具 =====
+function isAdmin(req){
+  if (!ADMIN_TOKEN) return false;
+  const token = req.headers['x-admin-token'] || (req.get && req.get('x-admin-token'));
+  if (token && token === ADMIN_TOKEN) return true;
+  const ck = req.headers['cookie'] || '';
+  if (ck && ck.includes('adm=')) {
+    try {
+      const m = ck.split(';').map(s=>s.trim()).find(p=>p.startsWith('adm='));
+      const val = m ? decodeURIComponent(m.split('=')[1]) : '';
+      if (val === '1') return true;
+    } catch {}
+  }
+  return false;
+}
+
+function maskPhone(phone){
+  if (typeof phone !== 'string') return phone;
+  const digits = phone.replace(/\D/g,'');
+  if (digits.length < 7) return phone.replace(/\d(?=\d{2})/g,'*');
+  // 留前2後3
+  let seen = 0, total = digits.length;
+  return phone.replace(/\d/g, (m)=>{
+    seen++;
+    return (seen<=2 || seen>total-3) ? m : '＊';
+  });
+}
+
+function maskContact(contact){
+  if (typeof contact !== 'string') return contact;
+  const c = contact.trim();
+  // 手機/電話：有 7 碼以上數字就當作電話遮蔽
+  const digits = c.replace(/\D/g,'');
+  if (digits.length >= 7) return maskPhone(c);
+  // Email 遮蔽
+  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c)){
+    const [name, domain] = c.split('@');
+    const masked = name.length<=2 ? name[0] + '***' : name.slice(0,2) + '***';
+    return `${masked}@${domain}`;
+  }
+  // 其他：僅顯示前2+***
+  if (c.length <= 2) return c[0] + '＊';
+  return c.slice(0,2) + '＊＊＊';
+}
+
+function serializeRequestRowSafe(row, volunteers = [], admin=false){
+  const base = serializeRequestRow(row, volunteers);
+  if (admin) return base;
+  // 公開回應：遮蔽電話
+  return {
+    ...base,
+    contactPhone: maskPhone(base.contactPhone),
+    volunteers: base.volunteers.map(v=>({ ...v, phone: maskPhone(v.phone) }))
+  };
+}
+
 // ---------------------- Requests / Volunteers API ----------------------
 app.get('/api/requests', async (req, res) => {
   try {
+    const admin = isAdmin(req);
     if (usePg) {
       const { rows } = await pool.query('SELECT * FROM requests ORDER BY created_at DESC');
       const { rows: vrows } = await pool.query(
@@ -196,11 +292,11 @@ app.get('/api/requests', async (req, res) => {
       );
       const bucket = new Map();
       for (const v of vrows) { if (!bucket.has(v.request_id)) bucket.set(v.request_id, []); bucket.get(v.request_id).push(v); }
-      return res.json(rows.map(r => serializeRequestRow(r, bucket.get(r.id) || [])));
+      return res.json(rows.map(r => serializeRequestRowSafe(r, bucket.get(r.id) || [], admin)));
     } else {
       const db = await loadDB();
       const rows = db.requests.slice().sort((a,b)=> new Date(b.created_at)-new Date(a.created_at));
-      const out = rows.map(r => serializeRequestRow(r, db.volunteers.filter(v=>v.request_id===r.id)));
+      const out = rows.map(r => serializeRequestRowSafe(r, db.volunteers.filter(v=>v.request_id===r.id), admin));
       return res.json(out);
     }
   } catch (err) {
@@ -211,6 +307,7 @@ app.get('/api/requests', async (req, res) => {
 
 app.post('/api/requests', async (req, res) => {
   try {
+    const admin = isAdmin(req);
     const { type, contactPerson, contactPhone, address, description, location, photo } = req.body || {};
     if (!type || !contactPerson || !contactPhone || !address || !description) {
       return res.status(400).json({ error: '缺少必要欄位' });
@@ -238,12 +335,12 @@ app.post('/api/requests', async (req, res) => {
         [ id, type, safeContactPerson, contactPhone, address, description, status, safePhoto, location?.lat ?? null, location?.lng ?? null, createdAt ]
       );
       const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
-      return res.status(201).json(serializeRequestRow(rows[0], []));
+      return res.status(201).json(serializeRequestRowSafe(rows[0], [], admin));
     } else {
       const db = await loadDB();
       db.requests.push({ id, type, contact_person: safeContactPerson, contact_phone: contactPhone, address, description, status, photo: safePhoto, location_lat: location?.lat ?? null, location_lng: location?.lng ?? null, created_at: createdAt });
       await saveDB(db);
-      return res.status(201).json(serializeRequestRow(db.requests.find(r=>r.id===id), []));
+      return res.status(201).json(serializeRequestRowSafe(db.requests.find(r=>r.id===id), [], admin));
     }
   } catch (err) {
     console.error('Create request error', err);
@@ -253,6 +350,7 @@ app.post('/api/requests', async (req, res) => {
 
 app.patch('/api/requests/:id/status', async (req, res) => {
   try {
+    const admin = isAdmin(req);
     const id = req.params.id;
     const { status } = req.body || {};
     if (!status) return res.status(400).json({ error: '缺少 status' });
@@ -263,7 +361,7 @@ app.patch('/api/requests/:id/status', async (req, res) => {
       await pool.query('UPDATE requests SET status = $1 WHERE id = $2', [status, id]);
       const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
       const { rows: vrows } = await pool.query('SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',[id]);
-      return res.json(serializeRequestRow(rows[0], vrows));
+      return res.json(serializeRequestRowSafe(rows[0], vrows, admin));
     } else {
       const db = await loadDB();
       const r = db.requests.find(r=>r.id===id);
@@ -271,7 +369,7 @@ app.patch('/api/requests/:id/status', async (req, res) => {
       r.status = status;
       await saveDB(db);
       const vols = db.volunteers.filter(v=>v.request_id===id);
-      return res.json(serializeRequestRow(r, vols));
+      return res.json(serializeRequestRowSafe(r, vols, admin));
     }
   } catch (err) {
     console.error('Update status error', err);
@@ -281,6 +379,7 @@ app.patch('/api/requests/:id/status', async (req, res) => {
 
 app.post('/api/requests/:id/volunteers', async (req, res) => {
   try {
+    const admin = isAdmin(req);
     const id = req.params.id;
     const { name, phone, note } = req.body || {};
     if (!name || !phone) return res.status(400).json({ error: '缺少志工姓名或電話' });
@@ -291,7 +390,7 @@ app.post('/api/requests/:id/volunteers', async (req, res) => {
       await pool.query('INSERT INTO volunteers (request_id, name, phone, note, created_at) VALUES ($1,$2,$3,$4,$5)', [id, name, phone, note || null, new Date().toISOString()]);
       const { rows } = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
       const { rows: vrows } = await pool.query('SELECT name, phone, note, created_at FROM volunteers WHERE request_id = $1 ORDER BY created_at ASC',[id]);
-      return res.status(201).json(serializeRequestRow(rows[0], vrows));
+      return res.status(201).json(serializeRequestRowSafe(rows[0], vrows, admin));
     } else {
       const db = await loadDB();
       if (!db.requests.find(r=>r.id===id)) return res.status(404).json({ error:'找不到需求' });
@@ -299,7 +398,7 @@ app.post('/api/requests/:id/volunteers', async (req, res) => {
       await saveDB(db);
       const r = db.requests.find(r=>r.id===id);
       const vols = db.volunteers.filter(v=>v.request_id===id);
-      return res.status(201).json(serializeRequestRow(r, vols));
+      return res.status(201).json(serializeRequestRowSafe(r, vols, admin));
     }
   } catch (err) {
     console.error('Add volunteer error', err);
@@ -357,13 +456,16 @@ app.post('/api/requests/:id/delete', async (req, res) => {
 // ---------------------- Feedback API ----------------------
 app.get('/api/feedback', async (req, res) => {
   try {
+    const admin = isAdmin(req);
     if (usePg) {
       const { rows } = await pool.query('SELECT * FROM feedback ORDER BY created_at DESC');
-      return res.json(rows);
+      const out = rows.map(r => admin ? r : { ...r, contact: maskContact(r.contact) });
+      return res.json(out);
     } else {
       const db = await loadDB();
       const rows = db.feedback.slice().sort((a,b)=> new Date(b.created_at)-new Date(a.created_at));
-      return res.json(rows);
+      const out = rows.map(r => admin ? r : { ...r, contact: maskContact(r.contact) });
+      return res.json(out);
     }
   } catch (err) {
     console.error('List feedback error', err);
@@ -373,6 +475,7 @@ app.get('/api/feedback', async (req, res) => {
 
 app.post('/api/feedback', async (req, res) => {
   try {
+    const admin = isAdmin(req);
     const { name, contact, message } = req.body || {};
     if (!message || String(message).trim() === '') return res.status(400).json({ error: '請輸入意見內容' });
     const id = uuid();
@@ -381,13 +484,14 @@ app.post('/api/feedback', async (req, res) => {
     if (usePg) {
       await pool.query('INSERT INTO feedback (id, name, contact, message, status, created_at) VALUES ($1,$2,$3,$4,$5,$6)', [id, name || null, contact || null, message, status, createdAt]);
       const { rows } = await pool.query('SELECT * FROM feedback WHERE id = $1', [id]);
-      return res.status(201).json(rows[0]);
+      const row = rows[0];
+      return res.status(201).json(admin ? row : { ...row, contact: maskContact(row.contact) });
     } else {
       const db = await loadDB();
       const row = { id, name: name||null, contact: contact||null, message, status, created_at: createdAt };
       db.feedback.unshift(row);
       await saveDB(db);
-      return res.status(201).json(row);
+      return res.status(201).json(admin ? row : { ...row, contact: maskContact(row.contact) });
     }
   } catch (err) {
     console.error('Create feedback error', err);
@@ -397,6 +501,7 @@ app.post('/api/feedback', async (req, res) => {
 
 app.patch('/api/feedback/:id/status', async (req, res) => {
   try {
+    const admin = isAdmin(req);
     const id = req.params.id;
     const { status } = req.body || {};
     if (!status) return res.status(400).json({ error: '缺少 status' });
@@ -405,14 +510,15 @@ app.patch('/api/feedback/:id/status', async (req, res) => {
       if (cur.rowCount === 0) return res.status(404).json({ error: '找不到資料' });
       await pool.query('UPDATE feedback SET status = $1 WHERE id = $2', [status, id]);
       const { rows } = await pool.query('SELECT * FROM feedback WHERE id = $1', [id]);
-      return res.json(rows[0]);
+      const row = rows[0];
+      return res.json(admin ? row : { ...row, contact: maskContact(row.contact) });
     } else {
       const db = await loadDB();
       const row = db.feedback.find(f=>f.id===id);
       if (!row) return res.status(404).json({ error:'找不到資料' });
       row.status = status;
       await saveDB(db);
-      return res.json(row);
+      return res.json(admin ? row : { ...row, contact: maskContact(row.contact) });
     }
   } catch (err) {
     console.error('Update feedback status error', err);
