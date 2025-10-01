@@ -1161,25 +1161,78 @@
     );
   };
 
-  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, onDelete, activeFilter }) => {
-    const filtered = requests.filter(r => activeFilter==='全部' ? true : r.type===activeFilter);
+  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, onDelete, activeFilter, searchKeyword }) => {
+    const [view, setView] = useState('cards'); // 'cards' | 'list'
+    const filtered = requests.filter(r => activeFilter==='全部' ? true : r.type===activeFilter)
+      .filter(r=>{
+        const q = (searchKeyword||'').trim().toLowerCase();
+        if (!q) return true;
+        const fields = [r.type, r.contactPerson, r.contactPhone, r.address, r.description].map(x=>String(x||'').toLowerCase());
+        return fields.some(v=>v.includes(q));
+      });
     const order = {[RequestStatus.NEW]:1,[RequestStatus.IN_PROGRESS]:2,[RequestStatus.COMPLETED]:3};
     const sorted = filtered.sort((a,b)=> a.status===b.status ? new Date(b.createdAt)-new Date(a.createdAt) : order[a.status]-order[b.status]);
     return (
-      <div className="py-8 ui-over space-y-6">
-        <RequestStatusSummary requests={requests} />
-        {sorted.length ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-            {sorted.map(r=>(
-              <RequestCard
-                key={r.id}
-                request={r}
-                onUpdateStatus={onUpdateStatus}
-                onAddVolunteer={onAddVolunteer}
-                onDelete={onDelete}
-              />
-            ))}
+      <div className="py-8 ui-over space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <RequestStatusSummary requests={requests} />
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500">視圖</span>
+            <button onClick={()=>setView('cards')} className={`px-2 py-1 text-xs rounded border ${view==='cards'?'bg-slate-800 text-white':'bg-white'}`}>卡片</button>
+            <button onClick={()=>setView('list')} className={`px-2 py-1 text-xs rounded border ${view==='list'?'bg-slate-800 text-white':'bg-white'}`}>清單</button>
           </div>
+        </div>
+
+        {sorted.length ? (
+          view==='cards' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+              {sorted.map(r=>(
+                <RequestCard
+                  key={r.id}
+                  request={r}
+                  onUpdateStatus={onUpdateStatus}
+                  onAddVolunteer={onAddVolunteer}
+                  onDelete={onDelete}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="bg-white border rounded-lg overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-50">
+                  <tr className="text-left text-slate-600">
+                    <th className="p-3">類型</th>
+                    <th className="p-3">狀態</th>
+                    <th className="p-3">聯絡人</th>
+                    <th className="p-3">電話</th>
+                    <th className="p-3">地址</th>
+                    <th className="p-3">描述</th>
+                    <th className="p-3 text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.map(r=> (
+                    <tr key={r.id} className="border-t">
+                      <td className="p-3 whitespace-nowrap">{r.type}</td>
+                      <td className="p-3 whitespace-nowrap">{r.status}</td>
+                      <td className="p-3 whitespace-nowrap">{r.contactPerson}</td>
+                      <td className="p-3 whitespace-nowrap">{r.contactPhone}</td>
+                      <td className="p-3">{r.address}</td>
+                      <td className="p-3">{r.description}</td>
+                      <td className="p-3 whitespace-nowrap text-right">
+                        <div className="inline-flex gap-2">
+                          {r.status!==RequestStatus.COMPLETED && (
+                            <button onClick={()=>onUpdateStatus(r.id, r.status===RequestStatus.NEW?RequestStatus.IN_PROGRESS:RequestStatus.COMPLETED)} className="px-2 py-1 text-xs bg-indigo-600 text-white rounded">更新</button>
+                          )}
+                          <button onClick={()=>onDelete(r.id)} className="px-2 py-1 text-xs border border-red-200 text-red-600 rounded">刪除</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
         ) : (
           <div className="text-center py-12 bg-white border border-dashed border-slate-300 rounded-lg">
             <div className="mx-auto h-12 w-12 text-gray-400">ℹ️</div>
@@ -1349,7 +1402,8 @@
     const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
     const [feedbackList, setFeedbackList] = useState([]);
     const [activeFilter, setActiveFilter] = useState('全部');
-    const [loadingRequests, setLoadingRequests] = useState(true);
+  const [loadingRequests, setLoadingRequests] = useState(true);
+  const [searchKeyword, setSearchKeyword] = useState('');
     const [requestError, setRequestError] = useState(null);
 
     const fetchRequests = useCallback(async () => {
@@ -1540,6 +1594,16 @@
                   </a>
                 </div>
               </div>
+              {/* 任務搜尋欄位 */}
+              <div className="mt-4">
+                <input
+                  type="text"
+                  value={searchKeyword}
+                  onChange={(e)=>setSearchKeyword(e.target.value)}
+                  placeholder="搜尋任務（描述／地址／聯絡人／電話）"
+                  className="w-full px-4 py-2 border rounded-md text-sm"
+                />
+              </div>
             </div>
 
             {requestError && (
@@ -1558,6 +1622,7 @@
                 onAddVolunteer={addVolunteer}
                 onDelete={deleteRequest}
                 activeFilter={activeFilter}
+                searchKeyword={searchKeyword}
               />
             )}
 
