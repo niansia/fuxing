@@ -88,8 +88,7 @@
         const method = (init?.method || 'GET').toUpperCase();
         const isProtected = (
           (/^\/api\/requests\/[^/]+\/status/.test(url) && (method==='PATCH')) ||
-          (/^\/api\/requests\/[^/]+$/.test(url) && (method==='DELETE')) ||
-          (/^\/api\/requests\/[^/]+\/delete$/.test(url)) ||
+          // 刪除需求路由已停用
           (/^\/api\/feedback\/[^/]+\/status/.test(url) && (method==='PATCH')) ||
           (/^\/api\/feedback\/[^/]+$/.test(url) && (method==='DELETE'))
         );
@@ -1054,11 +1053,10 @@
     );
   };
 
-  const RequestCard = ({ request, onUpdateStatus, onAddVolunteer, onDelete }) => {
+  const RequestCard = ({ request, onUpdateStatus, onAddVolunteer }) => {
     const { id, type, contactPerson, contactPhone, address, description, createdAt } = request;
     const status = normalizeStatus(request.status);
     const [updating, setUpdating] = useState(false);
-    const [deleting, setDeleting] = useState(false);
     const [actionError, setActionError] = useState('');
     const volunteerCount = Array.isArray(request.volunteers) ? request.volunteers.length : 0;
     const latestVolunteer = volunteerCount ? request.volunteers[volunteerCount - 1] : null;
@@ -1085,19 +1083,7 @@
       }
     };
 
-    const handleDelete = () => {
-      if (!onDelete) return;
-      if (!window.confirm('確定要刪除此需求？此操作無法復原。')) return;
-      const result = onDelete(id);
-      if (result && typeof result.then === 'function') {
-        setDeleting(true);
-        setActionError('');
-        result.catch(err => {
-          console.error('delete request failed', err);
-          setActionError(typeof err?.message === 'string' ? err.message : '刪除失敗，請稍後再試');
-        }).finally(()=>setDeleting(false));
-      }
-    };
+    // 刪除功能已停用（僅允許標記狀態為已完成）
 
     return (
       <div className={`bg-white rounded-xl shadow-sm overflow-hidden border border-slate-200 flex flex-col`}> 
@@ -1111,10 +1097,7 @@
               </div>
               <p className="text-slate-700 whitespace-pre-wrap text-sm leading-relaxed">{description}</p>
             </div>
-            <button onClick={handleDelete} disabled={deleting}
-              className="text-sm font-semibold text-red-600 hover:text-red-700 disabled:text-red-300">
-              {deleting ? '刪除中…' : '刪除任務'}
-            </button>
+            {/* 刪除任務按鈕已移除 */}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm text-slate-600 bg-slate-50 rounded-lg border border-slate-200 p-3">
@@ -1189,18 +1172,13 @@
               {updating ? '更新中…' : (statusActionText[status] || '更新狀態')}
             </button>
           )}
-          <button
-            onClick={handleDelete}
-            disabled={deleting}
-            className="px-4 py-2 text-sm font-semibold text-red-600 bg-white border border-red-200 rounded-md hover:bg-red-50 disabled:text-red-300 disabled:border-red-100">
-            {deleting ? '刪除中…' : '刪除任務'}
-          </button>
+          {/* 刪除任務按鈕已移除 */}
         </div>
       </div>
     );
   };
 
-  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, onDelete, activeFilter, statusFilter, searchKeyword }) => {
+  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, activeFilter, statusFilter, searchKeyword }) => {
     const [view, setView] = useState('cards'); // 'cards' | 'list'
     const filtered = requests
       .map(r => ({...r, status: normalizeStatus(r.status)}))
@@ -1234,7 +1212,6 @@
                   request={r}
                   onUpdateStatus={onUpdateStatus}
                   onAddVolunteer={onAddVolunteer}
-                  onDelete={onDelete}
                 />
               ))}
             </div>
@@ -1266,7 +1243,6 @@
                           {normalizeStatus(r.status)!==RequestStatus.COMPLETED && (
                             <button onClick={()=>onUpdateStatus(r.id, normalizeStatus(r.status)===RequestStatus.NEW?RequestStatus.IN_PROGRESS:RequestStatus.COMPLETED)} className="px-2 py-1 text-xs bg-indigo-600 text-white rounded">更新</button>
                           )}
-                          <button onClick={()=>onDelete(r.id)} className="px-2 py-1 text-xs border border-red-200 text-red-600 rounded">刪除</button>
                         </div>
                       </td>
                     </tr>
@@ -1575,12 +1551,7 @@
       setRequests(prev => prev.map(r => r.id===id ? updated : r));
     }, []);
 
-    const deleteRequest = useCallback(async (id)=>{
-      let res = await fetch(`/api/requests/${id}`, { method: 'DELETE' });
-      if (!res.ok) res = await fetch(`/api/requests/${id}/delete`, { method: 'POST' });
-      await parseJSONResponse(res, '刪除需求失敗');
-      setRequests(prev => prev.filter(r => r.id !== id));
-    }, []);
+    // 刪除需求功能已停用（不可刪除資料）。
 
     const loadFeedback = useCallback(async ()=>{
       try {
@@ -1637,7 +1608,6 @@
             requests={requests}
             onUpdateStatus={updateStatus}
             onAddVolunteer={addVolunteer}
-            onDelete={deleteRequest}
             activeFilter={activeFilter}
             statusFilter={statusFilter}
             searchKeyword={searchKeyword}

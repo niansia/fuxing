@@ -375,51 +375,13 @@ app.post('/api/requests/:id/volunteers', async (req, res) => {
 
 // 刪除需求：需管理金鑰
 app.delete('/api/requests/:id', requireAdmin, async (req, res) => {
-  try {
-    const id = req.params.id;
-    if (usePg) {
-      const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
-      if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
-      await pool.query('DELETE FROM requests WHERE id = $1', [id]);
-      return res.json({ success: true });
-    } else {
-      const db = await loadDB();
-      const before = db.requests.length;
-      db.requests = db.requests.filter(r=>r.id!==id);
-      db.volunteers = db.volunteers.filter(v=>v.request_id!==id);
-      if (db.requests.length===before) return res.status(404).json({ error:'找不到需求' });
-      await saveDB(db);
-      return res.json({ success:true });
-    }
-  } catch (err) {
-    console.error('Delete request error', err);
-    res.status(500).json({ error: '伺服器錯誤' });
-  }
+  return res.status(405).json({ error: '已停用刪除；請改用「已完成」標記' });
 });
 
 // 一些環境/網路可能會擋 DELETE，提供 POST 備援路由
 // 刪除需求（POST 備援）：需管理金鑰
 app.post('/api/requests/:id/delete', requireAdmin, async (req, res) => {
-  try {
-    const id = req.params.id;
-    if (usePg) {
-      const cur = await pool.query('SELECT id FROM requests WHERE id = $1', [id]);
-      if (cur.rowCount === 0) return res.status(404).json({ error: '找不到需求' });
-      await pool.query('DELETE FROM requests WHERE id = $1', [id]);
-      return res.json({ success: true });
-    } else {
-      const db = await loadDB();
-      const before = db.requests.length;
-      db.requests = db.requests.filter(r=>r.id!==id);
-      db.volunteers = db.volunteers.filter(v=>v.request_id!==id);
-      if (db.requests.length===before) return res.status(404).json({ error:'找不到需求' });
-      await saveDB(db);
-      return res.json({ success:true });
-    }
-  } catch (err) {
-    console.error('Delete request (POST fallback) error', err);
-    res.status(500).json({ error: '伺服器錯誤' });
-  }
+  return res.status(405).json({ error: '已停用刪除；請改用「已完成」標記' });
 });
 
 // ---------------------- Feedback API ----------------------
