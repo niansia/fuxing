@@ -457,13 +457,23 @@ app.post('/api/feedback', async (req, res) => {
     if (usePg) {
       await pool.query('INSERT INTO feedback (id, name, contact, message, status, created_at) VALUES ($1,$2,$3,$4,$5,$6)', [id, name || null, contact || null, message, status, createdAt]);
       const { rows } = await pool.query('SELECT * FROM feedback WHERE id = $1', [id]);
-      return res.status(201).json(rows[0]);
+      const r = rows[0];
+      // 回傳也進行遮蔽，避免提交後在客戶端顯示明碼
+      return res.status(201).json({
+        ...r,
+        name: maskName(r.name),
+        contact: r.contact ? maskPhone(r.contact) : null
+      });
     } else {
       const db = await loadDB();
       const row = { id, name: name||null, contact: contact||null, message, status, created_at: createdAt };
       db.feedback.unshift(row);
       await saveDB(db);
-      return res.status(201).json(row);
+      return res.status(201).json({
+        ...row,
+        name: maskName(row.name),
+        contact: row.contact ? maskPhone(row.contact) : null
+      });
     }
   } catch (err) {
     console.error('Create feedback error', err);
