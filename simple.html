@@ -41,6 +41,15 @@
   const RequestStatus = { NEW:'新登記', IN_PROGRESS:'處理中', COMPLETED:'已完成', CANCELLED:'已取消' };
   const FeedbackStatus = { PENDING:'未處理', DOING:'處理中', DONE:'已完成' };
 
+  // 將舊資料的狀態字詞正規化（例如：早期使用「已前往」= 現在的「處理中」）
+  function normalizeStatus(s) {
+    const v = String(s || '').trim();
+    if (v === '已前往' || v === '處理中') return RequestStatus.IN_PROGRESS;
+    if (v === '新登記' || v === '未處理') return RequestStatus.NEW;
+    if (v === '已完成' || v.includes('完成')) return RequestStatus.COMPLETED;
+    return v || RequestStatus.NEW;
+  }
+
   // 可選：從 <meta name="admin-token" content="..."> 或 localStorage 讀取管理金鑰
   const ADMIN_TOKEN = (document.querySelector('meta[name="admin-token"]')?.content) || localStorage.getItem('ADMIN_TOKEN') || '';
   const adminAuthHeader = ADMIN_TOKEN ? { Authorization: 'Bearer ' + ADMIN_TOKEN } : {};
@@ -1025,9 +1034,10 @@
         volunteerCount: 0
       };
       (requests || []).forEach(req => {
-        if (req.status === RequestStatus.NEW) base.newCount += 1;
-        if (req.status === RequestStatus.IN_PROGRESS) base.inProgressCount += 1;
-        if (req.status === RequestStatus.COMPLETED) base.completedCount += 1;
+        const s = normalizeStatus(req.status);
+        if (s === RequestStatus.NEW) base.newCount += 1;
+        if (s === RequestStatus.IN_PROGRESS) base.inProgressCount += 1;
+        if (s === RequestStatus.COMPLETED) base.completedCount += 1;
         if (Array.isArray(req.volunteers)) base.volunteerCount += req.volunteers.length;
       });
       return base;
@@ -1056,7 +1066,8 @@
   };
 
   const RequestCard = ({ request, onUpdateStatus, onAddVolunteer, onDelete }) => {
-    const { id, type, status, contactPerson, contactPhone, address, description, createdAt } = request;
+    const { id, type, contactPerson, contactPhone, address, description, createdAt } = request;
+    const status = normalizeStatus(request.status);
     const [updating, setUpdating] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [actionError, setActionError] = useState('');
@@ -1200,9 +1211,12 @@
     );
   };
 
-  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, onDelete, activeFilter, searchKeyword }) => {
+  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, onDelete, activeFilter, statusFilter, searchKeyword }) => {
     const [view, setView] = useState('cards'); // 'cards' | 'list'
-    const filtered = requests.filter(r => activeFilter==='全部' ? true : r.type===activeFilter)
+    const filtered = requests
+      .map(r => ({...r, status: normalizeStatus(r.status)}))
+      .filter(r => activeFilter==='全部' ? true : r.type===activeFilter)
+      .filter(r => statusFilter==='全部' ? true : normalizeStatus(r.status)===statusFilter)
       .filter(r=>{
         const q = (searchKeyword||'').trim().toLowerCase();
         if (!q) return true;
@@ -1260,7 +1274,7 @@
                       <td className="p-3">{r.description}</td>
                       <td className="p-3 whitespace-nowrap text-right">
                         <div className="inline-flex gap-2">
-                          {r.status!==RequestStatus.COMPLETED && (
+                          {normalizeStatus(r.status)!==RequestStatus.COMPLETED && (
                             <button onClick={()=>onUpdateStatus(r.id, r.status===RequestStatus.NEW?RequestStatus.IN_PROGRESS:RequestStatus.COMPLETED)} className="px-2 py-1 text-xs bg-indigo-600 text-white rounded">更新</button>
                           )}
                           <button onClick={()=>onDelete(r.id)} className="px-2 py-1 text-xs border border-red-200 text-red-600 rounded">刪除</button>
@@ -1502,7 +1516,8 @@
     const [isFormOpen, setIsFormOpen] = useState(false);
     const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
     const [feedbackList, setFeedbackList] = useState([]);
-    const [activeFilter, setActiveFilter] = useState('全部');
+    const [activeFilter, setActiveFilter] = useState('全部'); // 類型
+    const [statusFilter, setStatusFilter] = useState('全部'); // 狀態
     const [searchKeyword, setSearchKeyword] = useState('');
     const [loadingRequests, setLoadingRequests] = useState(true);
     const [requestError, setRequestError] = useState(null);
@@ -1604,19 +1619,37 @@
         <EmergencyTicker/>
         <Header/>
         <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex gap-2 items-center">
+          <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+            <div className="flex gap-2 items-center flex-wrap">
               <button onClick={()=>setIsFormOpen(true)} className="px-4 py-2 rounded bg-indigo-600 text-white text-sm">登記災情需求</button>
+              <select className="border rounded px-2 py-1 text-sm" value={activeFilter} onChange={e=>setActiveFilter(e.target.value)}>
+                <option>全部</option>
+                <option>{RequestType.VOLUNTEER}</option>
+                <option>{RequestType.SUPPLY}</option>
+              </select>
+              <select className="border rounded px-2 py-1 text-sm" value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}>
+                <option>全部</option>
+                <option>{RequestStatus.NEW}</option>
+                <option>{RequestStatus.IN_PROGRESS}</option>
+                <option>{RequestStatus.COMPLETED}</option>
+              </select>
               <input placeholder="搜尋關鍵字" className="border rounded px-2 py-1 text-sm" value={searchKeyword} onChange={e=>setSearchKeyword(e.target.value)} />
             </div>
             <div className="text-sm text-slate-500">{loadingRequests? '載入中…' : (requestError || `共 ${requests.length} 筆`)}</div>
           </div>
+
+          {/* 氣象 / 水位 */}
+          <WeatherAlert />
+
+          {/* 地圖總覽（含 CSV、官方、Shovel、自建等） */}
+          <LeafletMapPanel requests={requests} />
           <RequestDashboard
             requests={requests}
             onUpdateStatus={updateStatus}
             onAddVolunteer={addVolunteer}
             onDelete={deleteRequest}
             activeFilter={activeFilter}
+            statusFilter={statusFilter}
             searchKeyword={searchKeyword}
           />
         </main>
