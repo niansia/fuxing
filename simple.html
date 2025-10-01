@@ -1495,6 +1495,140 @@
       </div>
     );
   };
+
+  /* ---------------- App 主組件 ---------------- */
+  const App = () => {
+    const [requests, setRequests] = useState([]);
+    const [isFormOpen, setIsFormOpen] = useState(false);
+    const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
+    const [feedbackList, setFeedbackList] = useState([]);
+    const [activeFilter, setActiveFilter] = useState('全部');
+    const [searchKeyword, setSearchKeyword] = useState('');
+    const [loadingRequests, setLoadingRequests] = useState(true);
+    const [requestError, setRequestError] = useState(null);
+
+    const fetchRequests = useCallback(async () => {
+      setLoadingRequests(true);
+      setRequestError(null);
+      try {
+        const res = await fetch('/api/requests');
+        const data = await parseJSONResponse(res, '需求列表載入失敗');
+        setRequests(Array.isArray(data) ? data : []);
+      } catch (err) {
+        console.error('fetch requests error', err);
+        setRequestError(err?.message || '需求列表載入失敗');
+      } finally {
+        setLoadingRequests(false);
+      }
+    }, []);
+
+    useEffect(()=>{ fetchRequests(); }, [fetchRequests]);
+
+    // 綁定 Header 的『網站意見』按鈕
+    useEffect(() => {
+      const btn = document.getElementById('open-feedback');
+      if (!btn) return;
+      const onClick = ()=>{ setIsFeedbackOpen(true); loadFeedback(); };
+      btn.addEventListener('click', onClick);
+      return ()=> btn.removeEventListener('click', onClick);
+    }, []);
+
+    const addRequest = useCallback(async (data)=>{
+      const res = await fetch('/api/requests', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(data)
+      });
+      const created = await parseJSONResponse(res, '新增需求失敗');
+      setRequests(prev => [created, ...prev]);
+    }, []);
+
+    const updateStatus = useCallback(async (id, status)=>{
+      const res = await fetch(`/api/requests/${id}/status`, {
+        method:'PATCH',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ status })
+      });
+      const updated = await parseJSONResponse(res, '狀態更新失敗');
+      setRequests(prev => prev.map(r => r.id===id ? updated : r));
+    }, []);
+
+    const addVolunteer = useCallback(async (id, vol)=>{
+      const res = await fetch(`/api/requests/${id}/volunteers`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(vol)
+      });
+      const updated = await parseJSONResponse(res, '志工報名失敗');
+      setRequests(prev => prev.map(r => r.id===id ? updated : r));
+    }, []);
+
+    const deleteRequest = useCallback(async (id)=>{
+      let res = await fetch(`/api/requests/${id}`, { method: 'DELETE' });
+      if (!res.ok) res = await fetch(`/api/requests/${id}/delete`, { method: 'POST' });
+      await parseJSONResponse(res, '刪除需求失敗');
+      setRequests(prev => prev.filter(r => r.id !== id));
+    }, []);
+
+    // ---- Feedback APIs ----
+    const loadFeedback = useCallback(async ()=>{
+      try {
+        const res = await fetch('/api/feedback');
+        const data = await parseJSONResponse(res, '意見列表載入失敗');
+        setFeedbackList(Array.isArray(data) ? data : []);
+      } catch (e) { console.error(e); }
+    }, []);
+
+    useEffect(()=>{ loadFeedback(); }, [loadFeedback]);
+
+    const addFeedback = useCallback(async (payload)=>{
+      const res = await fetch('/api/feedback', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const created = await parseJSONResponse(res, '送出意見失敗');
+      setFeedbackList(prev=>[created, ...prev]);
+    }, []);
+
+    const updateFeedbackStatus = useCallback(async (id, status)=>{
+      const res = await fetch(`/api/feedback/${id}/status`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status}) });
+      const updated = await parseJSONResponse(res, '更新意見狀態失敗');
+      setFeedbackList(prev=> prev.map(f => f.id===id ? updated : f));
+    }, []);
+
+    const deleteFeedback = useCallback(async (id)=>{
+      const res = await fetch(`/api/feedback/${id}`, { method:'DELETE' });
+      await parseJSONResponse(res, '刪除意見失敗');
+      setFeedbackList(prev=> prev.filter(f=>f.id!==id));
+    }, []);
+
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <EmergencyTicker/>
+        <Header/>
+        <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex gap-2 items-center">
+              <button onClick={()=>setIsFormOpen(true)} className="px-4 py-2 rounded bg-indigo-600 text-white text-sm">登記災情需求</button>
+              <input placeholder="搜尋關鍵字" className="border rounded px-2 py-1 text-sm" value={searchKeyword} onChange={e=>setSearchKeyword(e.target.value)} />
+            </div>
+            <div className="text-sm text-slate-500">{loadingRequests? '載入中…' : (requestError || `共 ${requests.length} 筆`)}</div>
+          </div>
+          <RequestDashboard
+            requests={requests}
+            onUpdateStatus={updateStatus}
+            onAddVolunteer={addVolunteer}
+            onDelete={deleteRequest}
+            activeFilter={activeFilter}
+            searchKeyword={searchKeyword}
+          />
+        </main>
+
+        <RequestForm isOpen={isFormOpen} onClose={()=>setIsFormOpen(false)} onSubmit={addRequest}/>
+        <FeedbackModal isOpen={isFeedbackOpen} onClose={()=>setIsFeedbackOpen(false)} list={feedbackList} onCreate={addFeedback} onUpdateStatus={updateFeedbackStatus} onDelete={deleteFeedback}/>
+      </div>
+    );
+  };
+
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(<App/>);
   </script>
 </body>
 </html>
