@@ -1504,7 +1504,7 @@
     const [activeFilter, setActiveFilter] = useState('全部');
     const [statusFilter, setStatusFilter] = useState('全部');
     const [searchKeyword, setSearchKeyword] = useState('');
-    const [loadingRequests, setLoadingRequests] = useState(true);
+  const [loadingRequests, setLoadingRequests] = useState(true);
     const [requestError, setRequestError] = useState(null);
 
     const fetchRequests = useCallback(async () => {
@@ -1523,6 +1523,19 @@
     }, []);
 
     useEffect(()=>{ fetchRequests(); }, [fetchRequests]);
+
+    // 如果資料已經回來了但 loading 還沒被關掉（某些瀏覽器/快取邊界），保險機制關閉 loading
+    useEffect(() => {
+      if (!loadingRequests) return;
+      if ((requests || []).length > 0) {
+        setLoadingRequests(false);
+        return;
+      }
+      const t = setTimeout(() => {
+        if ((requests || []).length > 0) setLoadingRequests(false);
+      }, 3000);
+      return () => clearTimeout(t);
+    }, [loadingRequests, requests]);
 
     useEffect(() => {
       const btn = document.getElementById('open-feedback');
@@ -1618,7 +1631,7 @@
               </select>
               <input placeholder="搜尋關鍵字" className="border rounded px-2 py-1 text-sm" value={searchKeyword} onChange={e=>setSearchKeyword(e.target.value)} />
             </div>
-            <div className="text-sm text-slate-500">{loadingRequests? '載入中…' : (requestError || `共 ${requests.length} 筆`)}</div>
+            <div className="text-sm text-slate-500">{(loadingRequests && requests.length===0) ? '載入中…' : (requestError || `共 ${requests.length} 筆`)}</div>
           </div>
           <RequestDashboard
             requests={requests}
