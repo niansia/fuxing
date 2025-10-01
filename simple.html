@@ -5,18 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>花蓮光復鄉互助網</title>
 
-  <!-- React / Babel / Tailwind -->
   <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- Leaflet & toGeoJSON (KML 轉 GeoJSON) -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/togeojson@0.16.0/dist/togeojson.umd.js"></script>
 
-  <!-- PapaParse for CSV parsing -->
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='8' fill='%23ef4444'/%3E%3C/svg%3E" />
@@ -36,12 +33,10 @@
   <script type="text/babel">
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
-  /* ---------------- 常數 / 公用 ---------------- */
   const RequestType = { VOLUNTEER: '志工人力', SUPPLY: '物資需求' };
   const RequestStatus = { NEW:'新登記', IN_PROGRESS:'處理中', COMPLETED:'已完成', CANCELLED:'已取消' };
   const FeedbackStatus = { PENDING:'未處理', DOING:'處理中', DONE:'已完成' };
 
-  // 將舊資料的狀態字詞正規化（例如：早期使用「已前往」= 現在的「處理中」）
   function normalizeStatus(s) {
     const v = String(s || '').trim();
     if (v === '已前往' || v === '處理中') return RequestStatus.IN_PROGRESS;
@@ -1643,6 +1638,7 @@
 
           {/* 地圖總覽（含 CSV、官方、Shovel、自建等） */}
           <LeafletMapPanel requests={requests} />
+
           <RequestDashboard
             requests={requests}
             onUpdateStatus={updateStatus}
@@ -1652,6 +1648,12 @@
             statusFilter={statusFilter}
             searchKeyword={searchKeyword}
           />
+          
+          {/* 氣象 / 水位（移到底部顯示） */}
+          <WeatherAlert />
+
+          {/* 地圖總覽（移到底部顯示；含 CSV、官方、Shovel、自建等） */}
+          <LeafletMapPanel requests={requests} />
         </main>
 
         <RequestForm isOpen={isFormOpen} onClose={()=>setIsFormOpen(false)} onSubmit={addRequest}/>
