@@ -1161,9 +1161,19 @@
     );
   };
 
-  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, onDelete, activeFilter, searchKeyword }) => {
+  const RequestDashboard = ({ requests, onUpdateStatus, onAddVolunteer, onDelete, activeFilter, searchKeyword, statusFilter }) => {
     const [view, setView] = useState('cards'); // 'cards' | 'list'
-    const filtered = requests.filter(r => activeFilter==='全部' ? true : r.type===activeFilter)
+    const filtered = requests
+      .filter(r => activeFilter==='全部' ? true : r.type===activeFilter)
+      .filter(r => {
+        if (statusFilter==='全部狀態') return true;
+        const volCount = Array.isArray(r.volunteers)? r.volunteers.length : 0;
+        if (statusFilter==='未認領') return r.status===RequestStatus.NEW && volCount===0;
+        if (statusFilter==='已前往') return r.status===RequestStatus.IN_PROGRESS;
+        if (statusFilter==='已完成') return r.status===RequestStatus.COMPLETED;
+        if (statusFilter==='可清理') return (r.status===RequestStatus.IN_PROGRESS || r.status===RequestStatus.NEW) && volCount>0;
+        return true;
+      })
       .filter(r=>{
         const q = (searchKeyword||'').trim().toLowerCase();
         if (!q) return true;
@@ -1401,7 +1411,9 @@
     const [isShovelOpen, setIsShovelOpen] = useState(false);
     const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
     const [feedbackList, setFeedbackList] = useState([]);
-    const [activeFilter, setActiveFilter] = useState('全部');
+  const [activeFilter, setActiveFilter] = useState('全部'); // 類型篩選
+  const statusFilters = ['全部狀態','未認領','已前往','已完成','可清理'];
+  const [statusFilter, setStatusFilter] = useState('全部狀態');
   const [loadingRequests, setLoadingRequests] = useState(true);
   const [searchKeyword, setSearchKeyword] = useState('');
     const [requestError, setRequestError] = useState(null);
@@ -1565,6 +1577,18 @@
                       </button>
                     ))}
                   </div>
+                  {/* 狀態篩選 */}
+                  <div className="flex bg-slate-200 rounded-lg p-1">
+                    {statusFilters.map(s => (
+                      <button
+                        key={s}
+                        onClick={()=>setStatusFilter(s)}
+                        className={`w-full sm:w-auto px-3 py-2 text-sm font-semibold rounded-md ${statusFilter===s ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:bg-slate-300'}`}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
                   <div className="hidden lg:block text-xs text-slate-400">
                     依照需求類型與完成狀態自動排序，最近更新的任務會在前方顯示。
                   </div>
@@ -1623,6 +1647,7 @@
                 onDelete={deleteRequest}
                 activeFilter={activeFilter}
                 searchKeyword={searchKeyword}
+                statusFilter={statusFilter}
               />
             )}
 
