@@ -1017,22 +1017,20 @@
   };
 
   const RequestStatusSummary = ({ requests }) => {
-    const summary = useMemo(() => {
-      const base = {
-        newCount: 0,
-        inProgressCount: 0,
-        completedCount: 0,
-        volunteerCount: 0
-      };
-      (requests || []).forEach(req => {
-        const s = normalizeStatus(req.status);
-        if (s === RequestStatus.NEW) base.newCount += 1;
-        if (s === RequestStatus.IN_PROGRESS) base.inProgressCount += 1;
-        if (s === RequestStatus.COMPLETED) base.completedCount += 1;
-        if (Array.isArray(req.volunteers)) base.volunteerCount += req.volunteers.length;
-      });
-      return base;
-    }, [requests])
+    const base = {
+      newCount: 0,
+      inProgressCount: 0,
+      completedCount: 0,
+      volunteerCount: 0
+    };
+    (requests || []).forEach(req => {
+      const s = normalizeStatus(req.status);
+      if (s === RequestStatus.NEW) base.newCount += 1;
+      if (s === RequestStatus.IN_PROGRESS) base.inProgressCount += 1;
+      if (s === RequestStatus.COMPLETED) base.completedCount += 1;
+      if (Array.isArray(req.volunteers)) base.volunteerCount += req.volunteers.length;
+    });
+    const summary = base;
 
     const cards = [
       { label: '新登記', value: summary.newCount, accent: 'bg-blue-50 text-blue-700 border border-blue-100', icon: '🆕' },
@@ -1266,7 +1264,7 @@
                       <td className="p-3 whitespace-nowrap text-right">
                         <div className="inline-flex gap-2">
                           {normalizeStatus(r.status)!==RequestStatus.COMPLETED && (
-                            <button onClick={()=>onUpdateStatus(r.id, r.status===RequestStatus.NEW?RequestStatus.IN_PROGRESS:RequestStatus.COMPLETED)} className="px-2 py-1 text-xs bg-indigo-600 text-white rounded">更新</button>
+                            <button onClick={()=>onUpdateStatus(r.id, normalizeStatus(r.status)===RequestStatus.NEW?RequestStatus.IN_PROGRESS:RequestStatus.COMPLETED)} className="px-2 py-1 text-xs bg-indigo-600 text-white rounded">更新</button>
                           )}
                           <button onClick={()=>onDelete(r.id)} className="px-2 py-1 text-xs border border-red-200 text-red-600 rounded">刪除</button>
                         </div>
