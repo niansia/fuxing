@@ -12,6 +12,7 @@
     "csv-parse": "^6.1.0",
     "esbuild": "^0.23.0",
     "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
     "node-fetch": "^2.7.0",
     "pg": "^8.11.5",
     "rss-parser": "^3.13.0"
