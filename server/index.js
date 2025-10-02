@@ -10,6 +10,7 @@ const { transform } = require('esbuild');
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
+const multer = require('multer');
 
 // ---------------------- 基本設定 ----------------------
 const app = express();
@@ -40,7 +41,18 @@ app.use(cors({
   },
   credentials: false
 }));
-app.use(express.json());
+// 提高 JSON 解析上限，允許含壓縮後的 base64 圖片（前端已限制 ~2MB）
+app.use(express.json({ limit: '3mb' }));
+// 將 Body Parser 錯誤轉成統一的 JSON，避免前端得到 HTML 訊息
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: '上傳的內容過大，請壓縮圖片至 2MB 以內後再試' });
+  }
+  if (err instanceof SyntaxError && 'body' in err) {
+    return res.status(400).json({ error: '請求格式錯誤，請稍後再試' });
+  }
+  next(err);
+});
 
 // 健康檢查
 app.get('/health', (_, res) => res.send('ok'));
@@ -204,7 +216,7 @@ app.use(express.static('.', {
       res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     }
     // 可以加上基本快取（靜態檔 10 分鐘）
-    if (/\.(css|js|jsx|png|jpg|svg|html)$/.test(filePath)) {
+    if (/(\.(css|js|jsx|png|jpg|jpeg|webp|svg|html))$/.test(filePath)) {
       res.setHeader('Cache-Control', 'public, max-age=600');
     }
   }
@@ -212,6 +224,44 @@ app.use(express.static('.', {
 
 // ---------------------- 共用工具 ----------------------
 const uuid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+// ---------------------- 檔案上傳（圖片） ----------------------
+const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 25);
+try { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); } catch {}
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) { cb(null, UPLOAD_DIR); },
+  filename: function (req, file, cb) {
+    const ext = (path.extname(file.originalname || '').toLowerCase()) || '.jpg';
+    cb(null, uuid() + ext);
+  }
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: Math.max(1, MAX_UPLOAD_MB) * 1024 * 1024 }, // 預設 25MB，上限可由環境變數調整
+  fileFilter: (req, file, cb) => {
+    const ok = /^image\//i.test(file.mimetype) || /\.(jpg|jpeg|png|webp|gif|heic)$/i.test(file.originalname||'');
+    cb(ok ? null : new Error('僅允許上傳圖片檔案'));
+  }
+});
+
+// 將 uploads 目錄做為靜態資源提供下載（唯讀）
+app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '7d' }));
+
+// 上傳端點：欄位名稱 photo
+app.post('/api/uploads', (req, res) => {
+  upload.single('photo')(req, res, (err) => {
+    if (err) {
+      const msg = err.message || '上傳失敗';
+      const status = /file too large|超過/i.test(msg) ? 413 : 400;
+      const detail = /file too large|超過/.test(msg) ? `單張上限 ${MAX_UPLOAD_MB}MB` : undefined;
+      return res.status(status).json({ error: msg + (detail ? `（${detail}）` : '') });
+    }
+    if (!req.file) return res.status(400).json({ error: '沒有收到檔案' });
+    const rel = '/uploads/' + req.file.filename;
+    return res.status(201).json({ url: rel });
+  });
+});
 
 // 管理金鑰中介層（僅當設定 ADMIN_TOKEN 時啟用強制）
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
@@ -310,9 +360,12 @@ app.post('/api/requests', async (req, res) => {
     }
     // 簡單檢查圖片（base64 data URL），避免寫入過大
     let safePhoto = null;
-    if (typeof photo === 'string' && photo.startsWith('data:image/')) {
-      // 限制最大約 1.5MB（字串長度 ~ 2,000,000）
-      if (photo.length <= 2_000_000) safePhoto = photo;
+    if (typeof photo === 'string') {
+      if (/^\/uploads\//.test(photo)) {
+        safePhoto = photo;
+      } else if (photo.startsWith('data:image/')) {
+        if (photo.length <= 2_000_000) safePhoto = photo; // 舊有相容
+      }
     }
     const id = uuid();
     const createdAt = new Date().toISOString();

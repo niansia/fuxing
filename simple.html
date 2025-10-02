@@ -522,13 +522,13 @@
 
     const locateMe = useCallback(()=>{
       const m = mapRef.current; if (!m) return;
-      if (!navigator.geolocation) return alert('此瀏覽器不支援定位');
+      if (!navigator.geolocation) return alert('此瀏覽器不支援定位，請直接輸入地址或手動縮放地圖');
       navigator.geolocation.getCurrentPosition(pos=>{
         const { latitude, longitude } = pos.coords;
         m.flyTo([latitude, longitude], 15);
         L.circleMarker([latitude,longitude], {radius:8,color:'#059669',fillColor:'#10b981',fillOpacity:.8,weight:2})
           .addTo(m).bindPopup('你在這裡').openPopup();
-      },()=>alert('定位失敗，請檢查權限'));
+      },()=>alert('定位失敗，請在瀏覽器允許位置權限或改用地址搜尋'));
     }, []);
 
     const geocodeWithThrottle = useCallback(async (q)=>{
@@ -1280,26 +1280,55 @@
     const [submitting, setSubmitting] = useState(false);
     if (!isOpen) return null;
 
-    const getCurrentLocation = () => {
-      if (!navigator.geolocation) { setError('您的瀏覽器不支援定位功能'); return; }
+    const getCurrentLocation = async () => {
+      setError('');
       setGettingLocation(true);
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const { latitude, longitude } = pos.coords;
-          setLocation({ lat: latitude, lng: longitude });
-          setAddress(`GPS: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
-          setGettingLocation(false);
-        },
-        () => { setError('無法取得位置，請手動輸入地址'); setGettingLocation(false); },
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
+      const fallbackByAddress = async () => {
+        // 若使用者已輸入地址，嘗試以地址轉座標作為備援
+        const addr = (address || '').trim();
+        if (!addr) return false;
+        try {
+          const g = await geocodeAddress(addr);
+          if (g && isFinite(g.lat) && isFinite(g.lng)) {
+            setLocation({ lat: g.lat, lng: g.lng });
+            return true;
+          }
+        } catch {}
+        return false;
+      };
+
+      if (navigator.geolocation) {
+        await new Promise((resolve) => {
+          let done = false;
+          navigator.geolocation.getCurrentPosition(
+            (pos) => { if (done) return; done = true;
+              const { latitude, longitude } = pos.coords;
+              setLocation({ lat: latitude, lng: longitude });
+              setAddress(`GPS: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+              resolve();
+            },
+            async () => { if (done) return; done = true;
+              const ok = await fallbackByAddress();
+              if (!ok) setError('定位失敗，請允許位置權限或改輸入地址');
+              resolve();
+            },
+            { enableHighAccuracy: true, timeout: 10000 }
+          );
+          setTimeout(async () => { if (done) return; done = true; const ok = await fallbackByAddress(); if (!ok) setError('定位逾時，請輸入地址'); resolve(); }, 12000);
+        });
+      } else {
+        const ok = await fallbackByAddress();
+        if (!ok) setError('此瀏覽器不支援定位，請直接輸入地址');
+      }
+
+      setGettingLocation(false);
     };
 
     const handleSubmit = (e) => {
       e.preventDefault();
-      if (!contactPerson || !contactPhone || !address || !description) { setError('所有欄位皆為必填項目。'); return; }
+      if (!contactPerson || !contactPhone || !address || !description) { setError('請完整填寫「聯絡人、電話、地址、需求說明」。'); return; }
       setError('');
-      const payload = { type, contactPerson, contactPhone, address, description, photo, location: location ? {lat:location.lat,lng:location.lng} : null };
+  const payload = { type, contactPerson, contactPhone, address, description, photo, location: location ? {lat:location.lat,lng:location.lng} : null };
       const maybePromise = onSubmit(payload);
       if (maybePromise && typeof maybePromise.then === 'function') {
         setSubmitting(true);
@@ -1308,7 +1337,14 @@
           onClose();
         }).catch(err => {
           console.error('submit request failed', err);
-          setError(typeof err?.message === 'string' ? err.message : '送出失敗，請稍後再試');
+          const msg = String(err?.message||'').toLowerCase();
+          if (msg.includes('413') || msg.includes('too large') || msg.includes('過大')) {
+            setError('圖片過大，請壓縮至 2MB 以內後再嘗試。');
+          } else if (msg.includes('network') || msg.includes('failed to fetch')) {
+            setError('網路連線異常，請確認網路後再試。');
+          } else {
+            setError(typeof err?.message === 'string' ? err.message : '新增需求失敗，請稍後再試');
+          }
         }).finally(()=>setSubmitting(false));
       } else {
         setContactPerson(''); setContactPhone(''); setAddress(''); setDescription(''); setPhoto(null); setLocation(null); onClose();
@@ -1316,29 +1352,18 @@
     };
 
     const handleFile = async (file) => {
-      if (!file) return setPhoto(null);
-      const img = new Image();
-      const fr = new FileReader();
-      const done = await new Promise((resolve) => {
-        fr.onload = () => { img.src = fr.result; };
-        img.onload = () => resolve();
-        fr.readAsDataURL(file);
-      });
-      const maxSide = 1280;
-      const canvas = document.createElement('canvas');
-      let { width, height } = img;
-      const ratio = Math.min(1, maxSide/Math.max(width,height));
-      width = Math.round(width*ratio); height = Math.round(height*ratio);
-      canvas.width = width; canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img,0,0,width,height);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-      if (dataUrl.length > 2_000_000) {
-        setError('圖片過大，請選擇較小的照片或再壓縮');
-        return;
-      }
+      if (!file) { setPhoto(null); return; }
       setError('');
-      setPhoto(dataUrl);
+      try {
+        const fd = new FormData();
+        fd.append('photo', file);
+        const r = await fetch('/api/uploads', { method: 'POST', body: fd });
+        const data = await parseJSONResponse(r, '上傳失敗，請稍後再試');
+        if (data && data.url) setPhoto(data.url);
+      } catch (e) {
+        console.error('upload error', e);
+        setError('上傳失敗，請稍後再試');
+      }
     };
 
     return (
@@ -1382,7 +1407,7 @@
                   <input type="file" accept="image/*" onChange={(e)=>handleFile(e.target.files?.[0])} className="mt-1 block w-full text-sm"/>
                   {photo && (
                     <div className="mt-2">
-                      <img src={photo} alt="預覽" className="max-h-40 rounded border"/>
+                      <img src={photo} alt="預覽" className="max-h-40 rounded border" crossOrigin="anonymous"/>
                     </div>
                   )}
                 </div>
@@ -1527,12 +1552,10 @@
 
     const updates = [
       {
-        date: '2025/10/01',
-        title: '資安強化：封檔、防 XSS、權杖不落地 HTML',
+        date: '2025/10/02',
+        title: '更新上傳bug以及修復完成定位問題',
         items: [
-          '新增敏感路徑/檔案保護：封鎖 /Data、/server、/scripts、/docs 與 .sqlite/.db/.env 等副檔名（避免資料庫與原始碼被下載）',
-          '修補地圖 Popup XSS：所有 popup 文字改用 escapeHTML 轉義，避免惡意腳本注入',
-          '管理金鑰不再從 <meta> 讀取，只從 localStorage 取得，降低前端原始碼外露風險'
+          '修正無法上傳資料的問題',
         ],
       },
       {
