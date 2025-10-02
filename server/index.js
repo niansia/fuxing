@@ -224,6 +224,8 @@ app.use(express.static('.', {
 
 // ---------------------- 共用工具 ----------------------
 const uuid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const ALLOWED_TYPES = new Set(['志工人力','物資需求']);
+const ALLOWED_STATUS = new Set(['新登記','處理中','已完成','已取消']);
 
 // ---------------------- 檔案上傳（圖片） ----------------------
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
@@ -263,16 +265,11 @@ app.post('/api/uploads', (req, res) => {
   });
 });
 
-// 管理金鑰中介層（僅當設定 ADMIN_TOKEN 時啟用強制）
+// 管理金鑰中介層：若未設定 ADMIN_TOKEN，則一律擋下管理路由（避免被任意呼叫）
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 function requireAdmin(req, res, next) {
   if (!ADMIN_TOKEN) {
-    // 未設定金鑰時，視為開發模式：放行並警告
-    if (!requireAdmin.warned) {
-      console.warn('[SECURITY] ADMIN_TOKEN 未設定，管理路由未受保護（僅建議在本機開發時使用）。');
-      requireAdmin.warned = true;
-    }
-    return next();
+    return res.status(401).json({ error: '管理功能未啟用（缺少 ADMIN_TOKEN）' });
   }
   const h = req.headers['authorization'] || '';
   const alt = req.headers['x-admin-token'] || '';
@@ -353,6 +350,9 @@ app.post('/api/requests', async (req, res) => {
     if (!type || !contactPerson || !contactPhone || !address || !description) {
       return res.status(400).json({ error: '缺少必要欄位' });
     }
+    if (!ALLOWED_TYPES.has(String(type))) {
+      return res.status(400).json({ error: '不合法的需求類型' });
+    }
     // 若姓名看起來像 2-4 個中文，做簡單遮蔽，只留姓氏
     let safeContactPerson = String(contactPerson || '').trim();
     if (/^[\u4e00-\u9fa5]{2,4}$/.test(safeContactPerson)) {
@@ -398,6 +398,9 @@ app.patch('/api/requests/:id/status', requireAdmin, async (req, res) => {
     const id = req.params.id;
     const { status } = req.body || {};
     if (!status) return res.status(400).json({ error: '缺少 status' });
+    if (!ALLOWED_STATUS.has(String(status))) {
+      return res.status(400).json({ error: '不合法的狀態值' });
+    }
 
     if (usePg) {
       const cur = await pool.query('SELECT * FROM requests WHERE id = $1', [id]);
@@ -642,7 +645,7 @@ app.get('/api/qlake', async (req, res) => {
 // ---------------------- Alerts 聚合 ----------------------
 const parser = new Parser({ timeout: 10000 });
 const sources = [
-  { type: 'rss', name: 'CWA Earthquake', url: 'https://www.cwa.gov.tw/Data/service/eqk_rss.xml' },
+  // 移除已失效的 CWA 地震 RSS，改用 JSON API 取得地震資訊
   { type: 'html', name: 'WRA News', url: 'https://www.wra.gov.tw/News.aspx?n=7314' },
   { type: 'html', name: 'Forestry Agency', url: 'https://www.fa.gov.tw/cht/index.php?code=list&flag=detail&ids=23' }
 ];
@@ -700,9 +703,34 @@ async function aggregateAlerts() {
   const now = Date.now();
   if (now - cache.ts < CACHE_MS && cache.items.length) return cache.items;
   const results = [];
+  // 1) 先抓取各部會網站列表
   for (const src of sources) {
     const arr = src.type === 'rss' ? await fetchRSS(src) : await fetchHTMLList(src);
     results.push(...arr);
+  }
+  // 2) 另外補充 CWA 地震 JSON 資料
+  try {
+    const authKey = process.env.CWA_AUTH_KEY || 'CWA-DEMO-KEY';
+    const url = `https://opendata.cwa.gov.tw/api/v1/rest/datastore/E-A0015-001?Authorization=${authKey}`;
+    const resp = await fetch(url, { timeout: 10000 });
+    if (resp.ok) {
+      const data = await resp.json();
+      const records = data?.records?.earthquake || [];
+      const eqItems = records.slice(0, 10).map(e => ({
+        source: 'CWA Earthquake(JSON)',
+        title: `${e.EarthquakeInfo?.EarthquakeNo || ''} ${e.EarthquakeInfo?.Epicenter?.Location || ''} 規模M${e.EarthquakeInfo?.EarthquakeMagnitude?.MagnitudeValue || ''}`.trim(),
+        link: e.Web || 'https://www.cwa.gov.tw/V8/C/E/index.html',
+        isoDate: e.EarthquakeInfo?.OriginTime,
+        ts: e.EarthquakeInfo?.OriginTime ? Date.parse(e.EarthquakeInfo.OriginTime) : Date.now(),
+        summary: `震度最大：${e.Intensity?.ShakingArea?.map(a=>a.AreaName+ (a.AreaIntensity?' '+a.AreaIntensity:'' )).join('、') || ''}`,
+        type: 'json'
+      }));
+      results.push(...eqItems);
+    } else {
+      console.error('CWA EQ JSON fetch status', resp.status);
+    }
+  } catch (e) {
+    console.error('CWA EQ JSON fetch error', e.message);
   }
   results.sort((a, b) => (b.ts || 0) - (a.ts || 0));
   cache = { items: results, ts: now };

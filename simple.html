@@ -876,10 +876,10 @@
                 if (!isFinite(plat) || !isFinite(plng)) { alert('找不到座標，請調整地址或填入經緯度'); return; }
                 const mk = L.marker([plat,plng]).addTo(layerRef.current.user)
                   .bindPopup(`<div class="text-sm">
-                    <div class="font-medium mb-1">${name}</div>
-                    ${address?`<div class='text-xs text-gray-600'>📍 ${address}</div>`:''}
-                    ${phone?`<div class='text-xs text-gray-600'>📞 ${maskPhone(phone)}</div>`:''}
-                    ${note?`<div class='text-xs text-gray-600 whitespace-pre-wrap mt-1'>${note}</div>`:''}
+                    <div class="font-medium mb-1">${escapeHTML(name)}</div>
+                    ${address?`<div class='text-xs text-gray-600'>📍 ${escapeHTML(address)}</div>`:''}
+                    ${phone?`<div class='text-xs text-gray-600'>📞 ${escapeHTML(maskPhone(phone))}</div>`:''}
+                    ${note?`<div class='text-xs text-gray-600 whitespace-pre-wrap mt-1'>${escapeHTML(note)}</div>`:''}
                     <a class="text-blue-600 underline text-xs" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${plat},${plng}">🧭 導航</a>
                   </div>`);
                 const newItem = { id: 'user::'+uuid(), source:'自建', name, address, desc:note, phone, type:category, latlng:L.latLng(plat,plng), layer:mk };
