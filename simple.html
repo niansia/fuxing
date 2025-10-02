@@ -1120,9 +1120,13 @@
                 </a>
               </div>
             )}
-            {request.location?.lat && request.location?.lng && (
+            {((request.location?.lat && request.location?.lng) || (address && address.trim())) && (
               <div className="sm:col-span-2 flex justify-end">
-                <a href={`https://www.google.com/maps/dir/?api=1&destination=${request.location.lat},${request.location.lng}`}
+                <a href={`https://www.google.com/maps/dir/?api=1&destination=${
+                  request.location?.lat && request.location?.lng
+                    ? `${request.location.lat},${request.location.lng}`
+                    : encodeURIComponent(address)
+                }`}
                    target="_blank" rel="noopener noreferrer"
                    className="text-xs bg-green-600 text-white px-3 py-1.5 rounded-md hover:bg-green-700">🧭 地圖導航</a>
               </div>
@@ -1420,6 +1424,7 @@
                       {gettingLocation ? '定位中...' : '📍 定位'}
                     </button>
                   </div>
+                  <p className="mt-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 inline-block">請填寫確切完整地址（含縣市、鄉鎮、路段與門牌），以免導航至其他縣市。</p>
                 </div>
 
                 <div>
